@@ -1,0 +1,13 @@
+id: agent_safe_response
+name: Block Unsafe Guarantee Language
+enabled: true
+policy_type: structured
+trigger:
+  event: before_final_response
+conditions:
+  field: final_response
+  operator: contains
+  value: guaranteed approval
+action:
+  type: block
+  message: Agents must not promise guaranteed approval.

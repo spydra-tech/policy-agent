@@ -1,0 +1,28 @@
+application:
+  id: agentic-loan-desk
+  name: Agentic Loan Desk
+  environment: demo
+
+runtime:
+  default_agent_id: loan-agent
+
+inventory:
+  provider: file
+  path: ./inventory.yaml
+
+policies:
+  provider: directory
+  path: ./policies
+  support_english: true
+  compile_on_startup: true
+
+traces:
+  enabled: true
+  store:
+    provider: local
+    path: ./openagentpolicy_traces
+
+enforcement:
+  default_action: allow
+  on_policy_error: allow_with_warning
+  audit_enabled: true

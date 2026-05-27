@@ -1,0 +1,18 @@
+id: tool_high_value_structured
+name: High-Value Auto Approval (Structured reference)
+enabled: false
+policy_type: structured
+trigger:
+  event: before_tool_call
+  tool_id: approve_loan
+conditions:
+  all:
+    - field: tool_args.approved_amount
+      operator: ">"
+      value: 5000
+    - field: tool_args.approval_mode
+      operator: "=="
+      value: auto
+action:
+  type: block
+  message: Auto approval is not allowed above 5000.

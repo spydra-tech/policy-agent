@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openagentpolicy"
+version = "0.1.0"
+description = "Policy enforcement runtime for AI and agentic applications"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+http = [
+    "requests>=2.28",
+]
+
+[project.scripts]
+openagentpolicy = "openagentpolicy.cli.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["openagentpolicy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

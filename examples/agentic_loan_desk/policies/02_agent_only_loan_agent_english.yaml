@@ -1,0 +1,9 @@
+id: agent_only_loan_agent_english
+name: Only Loan Agent May Approve (English)
+enabled: true
+policy_type: english
+english: Only loan-agent may call approve loan.
+hints:
+  action:
+    type: block
+    message: Only loan-agent may approve loans.

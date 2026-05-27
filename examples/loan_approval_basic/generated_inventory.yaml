@@ -1,0 +1,54 @@
+generated_from:
+  source: traces
+  trace_count: 6
+tools:
+- id: approve_loan
+  observed_arguments:
+    application_id:
+      type: string
+      observed_values:
+      - app-1001
+      - app-1002
+      presence_rate: 1.0
+      policy_usable: true
+    approval_mode:
+      type: string
+      observed_values:
+      - auto
+      presence_rate: 1.0
+      policy_usable: true
+    approved_amount:
+      type: number
+      observed_min: 4000.0
+      observed_max: 7500.0
+      presence_rate: 1.0
+      policy_usable: true
+  observed_result_fields:
+    application_id:
+      type: string
+      observed_values:
+      - app-1001
+      presence_rate: 1.0
+      policy_usable: true
+    approval_mode:
+      type: string
+      observed_values:
+      - auto
+      presence_rate: 1.0
+      policy_usable: true
+    approved_amount:
+      type: number
+      observed_min: 4000.0
+      observed_max: 4000.0
+      presence_rate: 1.0
+      policy_usable: true
+    status:
+      type: string
+      observed_values:
+      - approved
+      presence_rate: 1.0
+      policy_usable: true
+  common_predecessors:
+  - approve_loan
+  common_successors:
+  - approve_loan

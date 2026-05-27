@@ -1,0 +1,18 @@
+id: workflow_human_review_required
+name: Human Review Required for Large Approvals
+enabled: true
+policy_type: structured
+trigger:
+  event: before_tool_call
+  tool_id: approve_loan
+conditions:
+  all:
+    - field: tool_args.approved_amount
+      operator: ">"
+      value: 5000
+    - field: metadata.human_reviewed
+      operator: "!="
+      value: true
+action:
+  type: block
+  message: High-value approval requires human review first.

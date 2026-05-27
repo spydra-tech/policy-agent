@@ -1,0 +1,10 @@
+id: auto_approval_english
+name: Auto Approval Threshold (English)
+enabled: false
+policy_type: english
+english: >
+  If approved amount is greater than 5000, auto approval is not allowed.
+hints:
+  action:
+    type: block
+    message: Auto approval is not allowed above 5000.

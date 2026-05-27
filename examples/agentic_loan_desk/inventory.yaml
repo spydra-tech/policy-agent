@@ -1,0 +1,45 @@
+application:
+  id: agentic-loan-desk
+  name: Agentic Loan Desk
+  environment: demo
+
+agents:
+  - id: loan-agent
+    name: Loan Agent
+    description: Primary loan approval workflow agent
+  - id: compliance-agent
+    name: Compliance Agent
+    description: Monitors compliance; must not approve loans directly
+
+tools:
+  - id: approve_loan
+    name: Approve Loan
+    description: Approve a loan application
+    side_effect: true
+    risk_level: high
+    arguments:
+      application_id:
+        type: string
+      approved_amount:
+        type: number
+        description: Loan principal amount
+        aliases:
+          - approved amount
+      approval_mode:
+        type: string
+        description: Approval workflow mode
+        aliases:
+          - approval mode
+        allowed_values:
+          - auto
+          - manual
+  - id: send_to_human_review
+    name: Send to Human Review
+    description: Escalate an application to a human reviewer
+    side_effect: true
+    risk_level: medium
+    arguments:
+      application_id:
+        type: string
+      reason:
+        type: string

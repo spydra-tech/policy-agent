@@ -1,0 +1,9 @@
+{
+  "event_type": "before_tool_call",
+  "tool_id": "approve_loan",
+  "tool_args": {
+    "application_id": "app-1002",
+    "approved_amount": 7500,
+    "approval_mode": "auto"
+  }
+}
