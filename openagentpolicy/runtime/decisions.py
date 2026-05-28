@@ -10,6 +10,8 @@ class DecisionType(str, Enum):
     BLOCK = "block"
     WARN = "warn"
     LOG_ONLY = "log_only"
+    REDACT_RESULT = "redact_result"
+    ESCALATE = "escalate"
     MODIFY_ARGS = "modify_args"
     REDIRECT_TOOL = "redirect_tool"
 

@@ -3,14 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from openagentpolicy.config import load_config
+from openagentpolicy.config import config_base_path, load_config
+from openagentpolicy.compiler import compile_english_policy
+from openagentpolicy.inventory.resolver import InventoryResolver
 from openagentpolicy.inventory.providers import FileInventoryProvider
 from openagentpolicy.inventory.schema import Inventory
 from openagentpolicy.policies.compiler import PolicyCompiler
-from openagentpolicy.policies.providers import (
-    DirectoryPolicyProvider,
-    load_policy_file,
-)
+from openagentpolicy.policies.providers import DirectoryPolicyProvider, PolicyProvider, load_policy_file
 from openagentpolicy.policies.schema import (
     CompileStatus,
     Condition,
@@ -19,6 +18,7 @@ from openagentpolicy.policies.schema import (
     TriggerEvent,
 )
 from openagentpolicy.runtime.events import PolicyEvent
+from openagentpolicy.runtime.policy_field_validation import validate_policy_fields
 
 
 class ValidationError(Exception):
@@ -77,7 +77,7 @@ def validate_policy_file(path: Path, inventory_path: Path) -> list[PolicyDocumen
 
     compiler = PolicyCompiler(inventory)
     for document in documents:
-        if document.policy_type == PolicyType.ENGLISH or document.english_text:
+        if document.policy_type == PolicyType.ENGLISH:
             result = compiler.compile_document(document)
             if result.compile_status != CompileStatus.COMPILED:
                 errors.append(
@@ -124,6 +124,91 @@ def compile_policy_file(path: Path, inventory_path: Path) -> list[dict[str, Any]
     return outputs
 
 
+def explain_config(path: Path) -> dict[str, Any]:
+    config = load_config(path)
+    base_path = config_base_path(path)
+    inventory = InventoryResolver(config.inventory, base_path).preload()
+    provider = PolicyProvider(config.policies, base_path, inventory=inventory)
+    loaded_policies, compile_results = provider.load_policies_with_results()
+    mismatches = validate_policy_fields(loaded_policies, inventory)
+
+    compiled: list[dict[str, Any]] = []
+    unenforceable: list[dict[str, Any]] = []
+    for result in compile_results:
+        item = {
+            "policy_id": result.policy_id,
+            "compile_status": result.compile_status.value,
+            "confidence": result.confidence,
+            "message": result.message,
+            "missing_fields": result.missing_fields,
+        }
+        if result.compile_status == CompileStatus.COMPILED:
+            compiled.append(item)
+        else:
+            unenforceable.append(item)
+
+    return {
+        "config_path": str(path.resolve()),
+        "inventory": {
+            "tool_count": len(inventory.tools),
+            "agent_count": len(inventory.agents),
+        },
+        "loaded_policies": [policy.id for policy in loaded_policies],
+        "compiled_policies": compiled,
+        "unenforceable_policies": unenforceable,
+        "inventory_mismatches": [issue.format() for issue in mismatches],
+    }
+
+
+def compile_english_to_policy(
+    *,
+    english: str,
+    inventory_path: Path,
+    policy_id: str | None = None,
+    action_hint: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    inventory = validate_inventory_file(inventory_path)
+    result = compile_english_policy(
+        english=english,
+        inventory=inventory,
+        policy_id=policy_id,
+        action_hint=action_hint,
+    )
+    return result.model_dump(mode="json")
+
+
+def explain_policy_file(path: Path, inventory_path: Path) -> dict[str, Any]:
+    inventory = validate_inventory_file(inventory_path)
+    documents = load_policy_documents(path)
+    compiler = PolicyCompiler(inventory)
+    details: list[dict[str, Any]] = []
+    for document in documents:
+        if document.policy_type == PolicyType.ENGLISH:
+            result = compiler.compile_document(document)
+            details.append(
+                {
+                    "policy_id": document.id,
+                    "policy_type": document.policy_type.value,
+                    "compile_status": result.compile_status.value,
+                    "resolved_terms": result.resolved_terms,
+                    "missing_fields": result.missing_fields,
+                    "message": result.message,
+                }
+            )
+        else:
+            policy = document.to_policy()
+            errors = _validate_conditions(document.id, policy.conditions, inventory.get_tool(policy.trigger.tool_id) if policy.trigger and policy.trigger.tool_id else None) if policy.conditions and policy.trigger and policy.trigger.tool_id else []
+            details.append(
+                {
+                    "policy_id": document.id,
+                    "policy_type": document.policy_type.value,
+                    "enforceability": "enforceable" if not errors else "not_enforceable",
+                    "errors": errors,
+                }
+            )
+    return {"policies": details}
+
+
 def test_policy_against_event(
     path: Path, event_path: Path, inventory_path: Path
 ) -> dict[str, Any]:
@@ -159,6 +244,7 @@ def test_policy_against_event(
         build_evaluation_context(
             tool_args=event.tool_args,
             tool_result=event.tool_result,
+            tool={},
             metadata=event.metadata,
             final_response=event.final_response,
             agent_id=event.agent_id,

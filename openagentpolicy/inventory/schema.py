@@ -18,6 +18,7 @@ class ArgumentSchema(BaseModel):
     description: str | None = None
     allowed_values: list[Any] | None = None
     aliases: list[str] | None = None
+    sensitive: bool = False
 
 
 class Application(BaseModel):

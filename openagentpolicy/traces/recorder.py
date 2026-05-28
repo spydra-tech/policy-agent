@@ -8,9 +8,9 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from openagentpolicy.config import TracesConfig, resolve_config_path
+from openagentpolicy.privacy import PrivacyRedactor
 from openagentpolicy.runtime.decisions import PolicyDecision
 
-SENSITIVE_KEY_SUBSTRINGS = ("password", "token", "secret")
 REDACTED_VALUE = "***REDACTED***"
 
 
@@ -71,10 +71,16 @@ class TraceRecorder:
 class LocalTraceRecorder(TraceRecorder):
     """Append tool-call trace events to a local JSONL file."""
 
-    def __init__(self, events_path: Path) -> None:
+    def __init__(
+        self,
+        events_path: Path,
+        *,
+        redactor: PrivacyRedactor | None = None,
+    ) -> None:
         self.enabled = True
         self.events_path = events_path.resolve()
         self.events_path.parent.mkdir(parents=True, exist_ok=True)
+        self._redactor = redactor
 
     def record_event(
         self,
@@ -90,9 +96,11 @@ class LocalTraceRecorder(TraceRecorder):
             event_type=event_type,
             timestamp=timestamp or datetime.now(timezone.utc),
             tool_id=tool_id,
-            tool_args=redact_sensitive_dict(tool_args or {}),
+            tool_args=self._redact_dict(tool_args or {}, tool_id=tool_id),
             tool_result=(
-                redact_sensitive_dict(tool_result) if tool_result is not None else None
+                self._redact_dict(tool_result, tool_id=tool_id)
+                if tool_result is not None
+                else None
             ),
             decision=_decision_to_dict(decision),
         )
@@ -113,13 +121,22 @@ class LocalTraceRecorder(TraceRecorder):
         if self.events_path.exists():
             self.events_path.unlink()
 
+    def _redact_dict(
+        self, data: dict[str, Any], *, tool_id: str | None
+    ) -> dict[str, Any]:
+        if self._redactor is None:
+            return redact_sensitive_dict(data)
+        sensitive_args = self._redactor._sensitive_args_for_tool(tool_id)
+        return self._redactor.redact_dict(data, sensitive_keys=sensitive_args)
+
 
 class InMemoryTraceRecorder(TraceRecorder):
     """In-memory trace recorder for tests."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, redactor: PrivacyRedactor | None = None) -> None:
         self.enabled = True
         self.events: list[TraceEventRecord] = []
+        self._redactor = redactor
 
     def record_event(
         self,
@@ -136,9 +153,9 @@ class InMemoryTraceRecorder(TraceRecorder):
                 event_type=event_type,
                 timestamp=timestamp or datetime.now(timezone.utc),
                 tool_id=tool_id,
-                tool_args=redact_sensitive_dict(tool_args or {}),
+                tool_args=self._redact_dict(tool_args or {}, tool_id=tool_id),
                 tool_result=(
-                    redact_sensitive_dict(tool_result)
+                    self._redact_dict(tool_result, tool_id=tool_id)
                     if tool_result is not None
                     else None
                 ),
@@ -146,16 +163,27 @@ class InMemoryTraceRecorder(TraceRecorder):
             )
         )
 
+    def _redact_dict(
+        self, data: dict[str, Any], *, tool_id: str | None
+    ) -> dict[str, Any]:
+        if self._redactor is None:
+            return redact_sensitive_dict(data)
+        sensitive_args = self._redactor._sensitive_args_for_tool(tool_id)
+        return self._redactor.redact_dict(data, sensitive_keys=sensitive_args)
+
 
 def create_trace_recorder(
-    config: TracesConfig, base_path: Path
+    config: TracesConfig,
+    base_path: Path,
+    *,
+    redactor: PrivacyRedactor | None = None,
 ) -> TraceRecorder | None:
     if not config.enabled:
         return None
     provider = config.store.provider
     if provider == "local":
         directory = resolve_config_path(base_path, config.store.path)
-        return LocalTraceRecorder(directory / "events.jsonl")
+        return LocalTraceRecorder(directory / "events.jsonl", redactor=redactor)
     raise ValueError(f"Unknown trace store provider: {provider}")
 
 
@@ -175,7 +203,10 @@ def redact_sensitive_value(key: str, value: Any) -> Any:
 
 def _is_sensitive_key(key: str) -> bool:
     lowered = key.lower()
-    return any(part in lowered for part in SENSITIVE_KEY_SUBSTRINGS)
+    return any(
+        part in lowered
+        for part in ("password", "token", "secret", "pan", "aadhaar", "ssn")
+    )
 
 
 def _decision_to_dict(decision: PolicyDecision | None) -> dict[str, Any] | None:

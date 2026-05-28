@@ -61,6 +61,37 @@ With response policy:
 - Better auditability (policy decisions appear in traces/audit logs)
 - Safer multi-agent scaling because controls are centralized
 
+## Authoring vs Runtime Modes
+
+`openagentpolicy` now separates policy authoring from runtime enforcement.
+
+- **Authoring / compilation mode**
+  - Input can be English policy text.
+  - Compiler resolves terms against inventory.
+  - Compiler returns either:
+    - compiled structured/compiled policy object, or
+    - clear `not_enforceable` / `needs_review` result with errors.
+  - Only compiled structured policy should be saved/activated.
+
+- **Runtime enforcement mode**
+  - Runtime enforces deterministic structured/compiled policies only.
+  - English is an authoring format, not runtime enforcement format.
+  - In production, recommended config:
+    - `compiler.enabled: false`
+    - `policies.require_compiled: true`
+    - `enforcement.fail_on_unresolved_fields: true`
+    - `enforcement.fail_on_unenforceable: true`
+
+### Correct production flow
+
+English policy from UI/API
+-> compile against inventory
+-> validate enforceability
+-> generate deterministic compiled policy
+-> review/approve
+-> save compiled policy
+-> runtime enforces compiled policy only
+
 ## Quickstart
 
 ```bash
@@ -405,6 +436,60 @@ action:
   message: Do not promise guaranteed approval.
 ```
 
+## English Compilation API
+
+Use the UI/backend-facing compile API:
+
+```python
+from openagentpolicy.compiler import compile_english_policy
+
+result = compile_english_policy(
+    english="If approved amount is greater than 5000, auto approval is not allowed.",
+    inventory=inventory,
+    policy_id="policy_auto_approval_threshold",
+    action_hint={"type": "block", "message": "Auto approval is not allowed above 5000."},
+)
+
+if result.status.value == "compiled":
+    compiled_policy = result.compiled_policy
+    # persist compiled policy
+else:
+    # show result.errors / result.missing_terms / result.suggested_fixes
+    pass
+```
+
+Compiled policy shape example:
+
+```yaml
+id: policy_auto_approval_threshold
+policy_type: compiled
+trigger:
+  event: before_tool_call
+  tool_id: approve_loan
+conditions:
+  all:
+    - field: tool_args.approved_amount
+      operator: ">"
+      value: 5000
+    - field: tool_args.approval_mode
+      operator: "=="
+      value: auto
+action:
+  type: block
+source:
+  english: If approved amount is greater than 5000, auto approval is not allowed.
+  compiler_version: "1.0"
+validation:
+  enforceability: enforceable
+```
+
+Not-enforceable example:
+
+English:
+`If KYC is not verified, do not approve the loan.`
+
+If `kyc_status` is not in inventory, compile returns `not_enforceable` with missing terms and actionable fixes.
+
 ## CLI
 
 All commands use the `openagentpolicy` entrypoint (stdlib `argparse`, no extra CLI dependency).
@@ -432,6 +517,24 @@ openagentpolicy validate-policy policies/auto_approval_structured.yaml --invento
 ```bash
 openagentpolicy compile-policy policies/english.yaml --inventory inventory.yaml
 openagentpolicy compile-policy policies/ --inventory inventory.yaml
+```
+
+Compile one English policy string to deterministic compiled policy:
+
+```bash
+openagentpolicy compile-english \
+  --inventory inventory.yaml \
+  --policy-id policy_auto_approval_threshold \
+  --english "If approved amount is greater than 5000, auto approval is not allowed." \
+  --output compiled_policy.yaml
+```
+
+Explain one policy against inventory:
+
+```bash
+openagentpolicy explain-policy \
+  --inventory inventory.yaml \
+  --policy policies/policy.yaml
 ```
 
 ### 5) Test policy against an event

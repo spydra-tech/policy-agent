@@ -9,7 +9,7 @@ from typing import Any
 import yaml
 
 from openagentpolicy.config import InventoryConfig, resolve_config_path
-from openagentpolicy.inventory.registry import get_tool_definition
+from openagentpolicy.inventory.registry import get_tool_definition, registered_tools
 from openagentpolicy.inventory.schema import Inventory, Tool
 
 
@@ -62,10 +62,7 @@ class AnnotationInventoryProvider(InventoryProvider):
     def load(self) -> Inventory:
         if self.modules is not None:
             return _load_annotation_inventory(self.modules)
-        raise NotImplementedError(
-            "Annotation inventory provider is not available via config yet. "
-            "Use inventory.provider: file or annotate tools with @policy_tool."
-        )
+        return Inventory(tools=registered_tools())
 
 
 # Backward-compatible alias

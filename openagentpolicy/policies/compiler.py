@@ -211,12 +211,12 @@ class PolicyCompiler:
                 message="Legacy multi-rule documents require review",
             )
 
-        if document.policy_type == PolicyType.ENGLISH or document.english_text:
+        if document.policy_type == PolicyType.ENGLISH:
             return self._compile_english_document(document)
 
         try:
             policy = document.to_policy()
-            if policy.policy_type == PolicyType.STRUCTURED:
+            if policy.policy_type in {PolicyType.STRUCTURED, PolicyType.COMPILED}:
                 return PolicyCompileResult(
                     policy_id=document.id,
                     compile_status=CompileStatus.COMPILED,

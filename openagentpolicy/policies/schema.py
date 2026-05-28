@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 class PolicyType(str, Enum):
     STRUCTURED = "structured"
     ENGLISH = "english"
+    COMPILED = "compiled"
 
 
 class CompileStatus(str, Enum):
@@ -33,6 +34,7 @@ class ConditionOperator(str, Enum):
     IN = "in"
     NOT_IN = "not_in"
     CONTAINS = "contains"
+    REGEX = "regex"
     EXISTS = "exists"
     NOT_EXISTS = "not_exists"
 
@@ -42,6 +44,8 @@ class ActionType(str, Enum):
     BLOCK = "block"
     WARN = "warn"
     LOG_ONLY = "log_only"
+    REDACT_RESULT = "redact_result"
+    ESCALATE = "escalate"
     MODIFY_ARGS = "modify_args"
     REDIRECT_TOOL = "redirect_tool"
 
@@ -60,6 +64,7 @@ class Condition(BaseModel):
     field: str | None = None
     operator: ConditionOperator | None = None
     value: Any | None = None
+    case_sensitive: bool = False
     all: list[Condition] | None = None
     any: list[Condition] | None = None
     not_: Condition | None = Field(default=None, alias="not")
@@ -112,16 +117,37 @@ class Policy(BaseModel):
     trigger: PolicyTrigger | None = None
     conditions: Condition | None = None
     action: PolicyAction | None = None
-    policy_text: str | None = None
+    english: str | None = None
+    source: dict[str, Any] | None = None
+    validation: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def validate_policy_shape(self) -> Policy:
         if self.policy_type == PolicyType.ENGLISH:
+            if not (self.english or "").strip():
+                raise ValueError("english policies require english text")
+            if self.trigger is not None or self.conditions is not None or self.action is not None:
+                raise ValueError(
+                    "english policies cannot define trigger/conditions/action"
+                )
             return self
+        if self.policy_type in {PolicyType.STRUCTURED, PolicyType.COMPILED} and self.english:
+            raise ValueError("structured/compiled policies cannot include english text")
         if self.trigger is None:
-            raise ValueError("structured policies require trigger")
+            raise ValueError("structured/compiled policies require trigger")
+        if self.conditions is None:
+            raise ValueError("structured/compiled policies require conditions")
         if self.action is None:
-            raise ValueError("structured policies require action")
+            raise ValueError("structured/compiled policies require action")
+        if self.policy_type == PolicyType.COMPILED:
+            if not self.source:
+                raise ValueError("compiled policies require source metadata")
+            if not self.validation:
+                raise ValueError("compiled policies require validation metadata")
+            if self.validation.get("enforceability") != "enforceable":
+                raise ValueError(
+                    "compiled policies require validation.enforceability=enforceable"
+                )
         return self
 
 
@@ -147,31 +173,42 @@ class PolicyDocument(BaseModel):
     conditions: Condition | None = None
     action: PolicyAction | None = None
     english: str | None = None
-    policy_text: str | None = None
+    source: dict[str, Any] | None = None
+    validation: dict[str, Any] | None = None
     hints: dict[str, Any] | None = None
     rules: list["PolicyRule"] = Field(default_factory=list)
-
-    @model_validator(mode="before")
-    @classmethod
-    def normalize_english_field(cls, data: Any) -> Any:
-        if isinstance(data, dict) and data.get("english") and not data.get("policy_text"):
-            data = dict(data)
-            data.setdefault("policy_text", data["english"])
-        return data
 
     @model_validator(mode="after")
     def validate_document_shape(self) -> PolicyDocument:
         if self.policy_type == PolicyType.ENGLISH:
             if not self.english_text:
-                raise ValueError("english policies require english or policy_text")
+                raise ValueError("english policies require english")
+            if self.trigger is not None or self.conditions is not None or self.action is not None:
+                raise ValueError(
+                    "english policies cannot define trigger/conditions/action"
+                )
+            if self.rules:
+                raise ValueError("english policies cannot define legacy rules")
             return self
+        if self.policy_type in {PolicyType.STRUCTURED, PolicyType.COMPILED} and self.english:
+            raise ValueError("structured/compiled policies cannot include english text")
         if self.rules:
+            if self.trigger is not None or self.conditions is not None or self.action is not None:
+                raise ValueError(
+                    "structured policy documents cannot mix legacy rules with trigger/conditions/action"
+                )
             return self
+        if self.trigger is None:
+            raise ValueError("structured/compiled policies require trigger")
+        if self.conditions is None:
+            raise ValueError("structured/compiled policies require conditions")
+        if self.action is None:
+            raise ValueError("structured/compiled policies require action")
         return self
 
     @property
     def english_text(self) -> str | None:
-        return (self.english or self.policy_text or "").strip() or None
+        return (self.english or "").strip() or None
 
     def to_policy(self) -> Policy:
         if self.rules:
@@ -186,7 +223,9 @@ class PolicyDocument(BaseModel):
             trigger=self.trigger,
             conditions=self.conditions,
             action=self.action,
-            policy_text=self.english_text,
+            english=self.english_text,
+            source=self.source,
+            validation=self.validation,
         )
 
 

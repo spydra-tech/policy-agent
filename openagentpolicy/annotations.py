@@ -3,16 +3,17 @@ from __future__ import annotations
 import contextvars
 import inspect
 import logging
+import types
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import wraps
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Generator, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Callable, Generator, TypeVar, Union, get_args, get_origin, overload
 
 from openagentpolicy.inventory.schema import ArgumentSchema, RiskLevel, Tool
 from openagentpolicy.policies.schema import TriggerEvent
 from openagentpolicy.runtime.decisions import DecisionType, PolicyDecision
-from openagentpolicy.inventory.registry import POLICY_TOOL_ATTR
+from openagentpolicy.inventory.registry import POLICY_TOOL_ATTR, register_tool_definition
 from openagentpolicy.runtime.events import PolicyEvent
 
 if TYPE_CHECKING:
@@ -191,6 +192,7 @@ def policy_tool(
         )
         wrapped = _wrap_with_enforcement(fn, tool)
         setattr(wrapped, POLICY_TOOL_ATTR, tool)
+        register_tool_definition(tool)
         return wrapped  # type: ignore[return-value]
 
     if func is not None:
@@ -223,10 +225,7 @@ def _build_tool_definition(
         description=description or (func.__doc__ or "").strip(),
         side_effect=side_effect,
         risk_level=risk,
-        arguments={
-            param: ArgumentSchema(type="string")
-            for param in _infer_parameters(func)
-        },
+        arguments=_infer_argument_schemas(func),
     )
 
 
@@ -383,8 +382,6 @@ def _apply_before_decision(
 
 
 def _apply_after_decision(decision: PolicyDecision) -> None:
-    if decision.decision == DecisionType.BLOCK:
-        raise PolicyViolation(decision.message, decision=decision)
     if decision.decision == DecisionType.WARN:
         logger.warning(
             "Policy warning after tool call: %s",
@@ -395,14 +392,26 @@ def _apply_after_decision(decision: PolicyDecision) -> None:
             "Policy log_only after tool call: %s",
             decision.message or "policy log",
         )
+    elif decision.decision == DecisionType.ESCALATE:
+        logger.warning(
+            "Policy escalation requested after tool call: %s",
+            decision.message or "policy escalate",
+        )
+    elif decision.decision == DecisionType.REDACT_RESULT:
+        logger.info(
+            "Policy redact_result requested after tool call: %s",
+            decision.message or "policy redact",
+        )
     elif decision.decision in {
+        DecisionType.BLOCK,
         DecisionType.MODIFY_ARGS,
         DecisionType.REDIRECT_TOOL,
     }:
-        raise PolicyViolation(
+        logger.warning(
+            "Ignoring unsupported after_tool_call decision: %s (%s)",
+            decision.decision.value,
             decision.message
             or f"{decision.decision.value} not supported after tool call",
-            decision=decision,
         )
 
 
@@ -416,6 +425,49 @@ def _infer_parameters(func: Callable[..., Any]) -> list[str]:
         ]
     except (TypeError, ValueError):
         return []
+
+
+def _infer_argument_schemas(func: Callable[..., Any]) -> dict[str, ArgumentSchema]:
+    try:
+        sig = inspect.signature(func)
+    except (TypeError, ValueError):
+        return {}
+    schemas: dict[str, ArgumentSchema] = {}
+    for param in sig.parameters.values():
+        if param.name in {"self", "cls"}:
+            continue
+        schemas[param.name] = ArgumentSchema(type=_annotation_to_schema_type(param.annotation))
+    return schemas
+
+
+def _annotation_to_schema_type(annotation: Any) -> str:
+    if annotation is inspect.Signature.empty:
+        return "string"
+    origin = get_origin(annotation)
+    if origin is not None:
+        if origin in {list, tuple, set, frozenset}:
+            return "array"
+        if origin is dict:
+            return "object"
+        if origin is type(None):
+            return "string"
+        if origin in {Union, types.UnionType}:
+            args = [arg for arg in get_args(annotation) if arg is not type(None)]
+            if args:
+                return _annotation_to_schema_type(args[0])
+            return "string"
+
+    if annotation is str:
+        return "string"
+    if annotation in {int, float}:
+        return "number"
+    if annotation is bool:
+        return "boolean"
+    if annotation in {dict, object}:
+        return "object"
+    if annotation in {list, tuple, set, frozenset}:
+        return "array"
+    return "string"
 
 
 _RESPONSE_TEXT_KEYS = ("content", "text", "final_answer", "response", "message")

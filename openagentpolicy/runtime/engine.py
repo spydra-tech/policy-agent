@@ -8,14 +8,28 @@ from openagentpolicy.audit.logger import AuditLogger
 from openagentpolicy.config import EngineConfig, OnPolicyError, config_base_path, load_config
 from openagentpolicy.inventory.resolver import InventoryResolver
 from openagentpolicy.inventory.schema import Inventory
+from openagentpolicy.privacy import PrivacyRedactor
 from openagentpolicy.policies.providers import PolicyProvider
-from openagentpolicy.policies.schema import Policy, PolicyCompileResult, TriggerEvent
+from openagentpolicy.policies.schema import (
+    CompileStatus,
+    Policy,
+    PolicyCompileResult,
+    TriggerEvent,
+)
 from openagentpolicy.runtime.decisions import DecisionType, PolicyDecision
 from openagentpolicy.runtime.evaluator import PolicyEvaluator, build_evaluation_context
 from openagentpolicy.runtime.events import PolicyEvent
+from openagentpolicy.runtime.policy_field_validation import (
+    UnresolvedPolicyFieldsError,
+    validate_policy_fields,
+)
 from openagentpolicy.traces.recorder import TraceRecorder, create_trace_recorder
 
 logger = logging.getLogger(__name__)
+
+
+class UnenforceablePoliciesError(ValueError):
+    """Raised when fail_on_unenforceable blocks startup."""
 
 
 class PolicyRuntime:
@@ -31,10 +45,9 @@ class PolicyRuntime:
         self.base_path = base_path or Path.cwd()
         self._inventory_resolver = InventoryResolver(config.inventory, self.base_path)
         self._evaluator = PolicyEvaluator()
+        self._redactor: PrivacyRedactor | None = None
         self._audit = AuditLogger(config.audit_log)
-        self._trace_recorder: TraceRecorder | None = create_trace_recorder(
-            config.traces, self.base_path
-        )
+        self._trace_recorder: TraceRecorder | None = None
 
         self._inventory: Inventory | None = None
         self._policies: list[Policy] | None = None
@@ -76,10 +89,20 @@ class PolicyRuntime:
         self._load_errors = []
         self._inventory = self._load_inventory()
         self._inventory_resolver._cached = self._inventory
+        self._redactor = PrivacyRedactor.from_config(
+            self._inventory, self.config.privacy.redact_keys
+        )
+        self._audit = AuditLogger(self.config.audit_log, redactor=self._redactor)
+        self._trace_recorder = create_trace_recorder(
+            self.config.traces,
+            self.base_path,
+            redactor=self._redactor,
+        )
         self._policy_provider = PolicyProvider(
             self.config.policies,
             self.base_path,
             inventory=self._inventory,
+            compiler_enabled=self.config.compiler.enabled,
         )
         if self.config.policies.compile_on_startup:
             self._policies, self._compile_results = self._load_policies()
@@ -96,9 +119,56 @@ class PolicyRuntime:
     def _load_policies(self) -> tuple[list[Policy], list[PolicyCompileResult]]:
         try:
             assert self._policy_provider is not None
-            return self._policy_provider.load_policies_with_results()
+            policies, results = self._policy_provider.load_policies_with_results()
+            self._raise_if_unenforceable(results)
+            unresolved = validate_policy_fields(policies, self.inventory)
+            if unresolved:
+                error = UnresolvedPolicyFieldsError(unresolved)
+                if self.config.enforcement.fail_on_unresolved_fields:
+                    raise error
+                for issue in unresolved:
+                    logger.warning(issue.format())
+            return policies, results
         except Exception as exc:
+            if (
+                self.config.enforcement.fail_on_unresolved_fields
+                and isinstance(exc, UnresolvedPolicyFieldsError)
+            ):
+                raise
+            if (
+                self.config.enforcement.fail_on_unenforceable
+                and isinstance(exc, UnenforceablePoliciesError)
+            ):
+                raise
             return self._handle_load_error("policies", exc, ([], []))
+
+    def _raise_if_unenforceable(
+        self, results: list[PolicyCompileResult]
+    ) -> None:
+        if not self.config.enforcement.fail_on_unenforceable:
+            return
+        app_env = (self.config.application.environment if self.config.application else None) or ""
+        if app_env.lower() != "production":
+            return
+        bad = [
+            result
+            for result in results
+            if result.compile_status in {
+                CompileStatus.NOT_ENFORCEABLE,
+                CompileStatus.NEEDS_REVIEW,
+            }
+        ]
+        if not bad:
+            return
+        details = "; ".join(
+            f"{r.policy_id}={r.compile_status.value}"
+            + (f" ({r.message})" if r.message else "")
+            for r in bad
+        )
+        raise UnenforceablePoliciesError(
+            "Found unenforceable policies while fail_on_unenforceable=true in production: "
+            f"{details}"
+        )
 
     def _handle_load_error(self, resource: str, exc: Exception, fallback: Any) -> Any:
         message = f"Failed to load {resource}: {exc}"
@@ -145,6 +215,7 @@ class PolicyRuntime:
         context = build_evaluation_context(
             tool_args=event.tool_args,
             tool_result=event.tool_result,
+            tool=_tool_context(self.inventory, tool_id),
             metadata=event.metadata,
             final_response=event.final_response,
             agent_id=event.agent_id,
@@ -197,5 +268,19 @@ def _parse_trigger_event(event_type: str) -> TriggerEvent | None:
         return TriggerEvent(event_type)
     except ValueError:
         return None
+
+
+def _tool_context(inventory: Inventory, tool_id: str) -> dict[str, Any]:
+    if not tool_id:
+        return {}
+    tool = inventory.get_tool(tool_id)
+    if tool is None:
+        return {}
+    return {
+        "id": tool.id,
+        "name": tool.name,
+        "risk_level": tool.risk_level.value if tool.risk_level else None,
+        "side_effect": tool.side_effect,
+    }
 
 

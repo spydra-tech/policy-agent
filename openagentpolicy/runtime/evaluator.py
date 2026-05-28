@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from openagentpolicy.policies.schema import (
@@ -20,6 +21,8 @@ DECISION_PRECEDENCE: tuple[DecisionType, ...] = (
     DecisionType.REDIRECT_TOOL,
     DecisionType.MODIFY_ARGS,
     DecisionType.WARN,
+    DecisionType.ESCALATE,
+    DecisionType.REDACT_RESULT,
     DecisionType.LOG_ONLY,
     DecisionType.ALLOW,
 )
@@ -192,7 +195,19 @@ class PolicyEvaluator:
         if op == ConditionOperator.CONTAINS:
             if actual is None:
                 return False
+            if isinstance(actual, str) and isinstance(expected, str):
+                if condition.case_sensitive:
+                    return expected in actual
+                return expected.lower() in actual.lower()
             return expected in actual
+        if op == ConditionOperator.REGEX:
+            if not isinstance(actual, str) or not isinstance(expected, str):
+                return False
+            flags = 0 if condition.case_sensitive else re.IGNORECASE
+            try:
+                return re.search(expected, actual, flags=flags) is not None
+            except re.error:
+                return False
         if op == ConditionOperator.EQ:
             return actual == expected
         if op == ConditionOperator.NE:
@@ -255,6 +270,7 @@ def build_evaluation_context(
     *,
     tool_args: dict[str, Any] | None = None,
     tool_result: dict[str, Any] | None = None,
+    tool: dict[str, Any] | None = None,
     metadata: dict[str, Any] | None = None,
     final_response: str | None = None,
     agent_id: str | None = None,
@@ -263,6 +279,7 @@ def build_evaluation_context(
     return {
         "tool_args": tool_args or {},
         "tool_result": tool_result,
+        "tool": tool or {},
         "metadata": metadata or {},
         "final_response": final_response,
         "agent_id": agent_id,

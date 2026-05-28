@@ -11,6 +11,9 @@ from openagentpolicy import PolicyEngine
 from openagentpolicy.cli.validate import (
     ValidationError,
     compile_policy_file,
+    compile_english_to_policy,
+    explain_config,
+    explain_policy_file,
     test_policy_against_event,
     validate_config_file,
     validate_inventory_file,
@@ -32,6 +35,9 @@ def main(argv: list[str] | None = None) -> int:
     _add_compile_policy(sub)
     _add_test_policy(sub)
     _add_generate_inventory(sub)
+    _add_explain(sub)
+    _add_compile_english(sub)
+    _add_explain_policy(sub)
     _add_check(sub)
 
     args = parser.parse_args(argv)
@@ -86,6 +92,41 @@ def _dispatch(args: argparse.Namespace) -> int:
             f"Tools: {len(inventory.tools)}, "
             f"trace_count: {inventory.generated_from.trace_count}"
         )
+        return 0
+
+    if args.command == "explain":
+        output = explain_config(args.config)
+        if args.format == "json":
+            print(json.dumps(output, indent=2))
+        else:
+            print(yaml.safe_dump(output, sort_keys=False))
+        return 0
+
+    if args.command == "compile-english":
+        action_hint = json.loads(args.action_hint) if args.action_hint else None
+        output = compile_english_to_policy(
+            english=args.english,
+            inventory_path=args.inventory,
+            policy_id=args.policy_id,
+            action_hint=action_hint,
+        )
+        status = output.get("status")
+        if status == "compiled" and output.get("compiled_policy"):
+            Path(args.output).write_text(
+                yaml.safe_dump(output["compiled_policy"], sort_keys=False),
+                encoding="utf-8",
+            )
+            print(f"Wrote compiled policy to {args.output}")
+            return 0
+        print(json.dumps(output, indent=2))
+        return 1
+
+    if args.command == "explain-policy":
+        output = explain_policy_file(args.policy, args.inventory)
+        if args.format == "json":
+            print(json.dumps(output, indent=2))
+        else:
+            print(yaml.safe_dump(output, sort_keys=False))
         return 0
 
     if args.command == "check":
@@ -197,6 +238,50 @@ def _add_check(sub: argparse._SubParsersAction) -> None:
         default="{}",
         help="JSON object of tool arguments",
     )
+
+
+def _add_explain(sub: argparse._SubParsersAction) -> None:
+    cmd = sub.add_parser(
+        "explain",
+        help=(
+            "Explain loaded policies, compilation results, and inventory mismatches "
+            "from a full engine config"
+        ),
+    )
+    cmd.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Path to openagentpolicy.yaml",
+    )
+    cmd.add_argument(
+        "--format",
+        choices=["yaml", "json"],
+        default="yaml",
+        help="Output format",
+    )
+
+
+def _add_compile_english(sub: argparse._SubParsersAction) -> None:
+    cmd = sub.add_parser(
+        "compile-english",
+        help="Compile one English policy into structured compiled policy",
+    )
+    cmd.add_argument("--inventory", type=Path, required=True)
+    cmd.add_argument("--policy-id", type=str, default=None)
+    cmd.add_argument("--english", type=str, required=True)
+    cmd.add_argument("--action-hint", type=str, default=None)
+    cmd.add_argument("--output", type=Path, required=True)
+
+
+def _add_explain_policy(sub: argparse._SubParsersAction) -> None:
+    cmd = sub.add_parser(
+        "explain-policy",
+        help="Explain policy enforceability and compilation details",
+    )
+    cmd.add_argument("--inventory", type=Path, required=True)
+    cmd.add_argument("--policy", type=Path, required=True)
+    cmd.add_argument("--format", choices=["yaml", "json"], default="yaml")
 
 
 if __name__ == "__main__":

@@ -160,6 +160,7 @@ class PolicyProvider:
         base_path: Path,
         *,
         inventory: Inventory | None = None,
+        compiler_enabled: bool = True,
     ) -> None:
         self.config = config
         self.base_path = base_path
@@ -172,6 +173,7 @@ class PolicyProvider:
             ai_config=config.ai,
         )
         self._last_compile_results: list[PolicyCompileResult] = []
+        self._compiler_enabled = compiler_enabled
 
     @property
     def compile_results(self) -> list[PolicyCompileResult]:
@@ -193,11 +195,31 @@ class PolicyProvider:
 
         for document in self.load_documents():
             if document.policy_type == PolicyType.ENGLISH:
-                if not self.config.support_english:
-                    logger.warning(
-                        "Skipping english policy %s (support_english=false)",
-                        document.id,
+                if self.config.require_compiled:
+                    result = PolicyCompileResult(
+                        policy_id=document.id,
+                        compile_status=CompileStatus.NOT_ENFORCEABLE,
+                        confidence=0.0,
+                        message=(
+                            "English policies are not allowed when "
+                            "policies.require_compiled=true"
+                        ),
                     )
+                    results.append(result)
+                    self._log_compile_result(result)
+                    continue
+                if not self.config.support_english or not self._compiler_enabled:
+                    result = PolicyCompileResult(
+                        policy_id=document.id,
+                        compile_status=CompileStatus.NEEDS_REVIEW,
+                        confidence=0.0,
+                        message=(
+                            "English compiler disabled; policy skipped "
+                            "(set compiler.enabled=true for authoring mode)"
+                        ),
+                    )
+                    results.append(result)
+                    self._log_compile_result(result)
                     continue
                 result = self._english_compiler.compile_document(document)
                 results.append(result)
@@ -206,10 +228,25 @@ class PolicyProvider:
                     result.compile_status == CompileStatus.COMPILED
                     and result.compiled_policy is not None
                 ):
-                    policies.append(result.compiled_policy)
+                    compiled = result.compiled_policy
+                    if compiled.policy_type != PolicyType.COMPILED:
+                        compiled = compiled.model_copy(
+                            update={
+                                "policy_type": PolicyType.COMPILED,
+                                "source": {
+                                    "english": document.english,
+                                    "compiler_version": "1.0",
+                                },
+                                "validation": {"enforceability": "enforceable"},
+                            }
+                        )
+                    policies.append(compiled)
                 continue
 
-            if document.rules or document.policy_type == PolicyType.STRUCTURED:
+            if document.rules or document.policy_type in {
+                PolicyType.STRUCTURED,
+                PolicyType.COMPILED,
+            }:
                 result = self._compiler.compile_document(document)
                 results.append(result)
                 self._log_compile_result(result)
