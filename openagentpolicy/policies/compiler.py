@@ -1,3 +1,44 @@
+"""Rule-based English policy compiler (a small, fixed "locked template" grammar).
+
+This compiler is intentionally NOT a general natural-language parser. It
+recognizes a small, fixed set of sentence templates and resolves the referenced
+terms against inventory. Anything outside the grammar is reported as
+``not_enforceable``/``needs_review`` rather than guessed. For free-form English,
+use the ``hybrid`` compiler (AI translation corroborated by this compiler).
+
+Supported grammar
+-----------------
+Comparisons (numeric value, field resolved from inventory phrases/aliases):
+- ``<field> is greater than|more than|above <number>``  -> field > number
+- ``<field> is less than|below <number>``               -> field < number
+- ``<field> is equal to <number>``                       -> field == number
+
+Presence:
+- ``if <field> is missing``                              -> field not_exists
+
+Value equality (when inventory declares ``allowed_values``):
+- a value phrase such as ``auto approval`` (for ``approval_mode=auto``)
+  -> approval_mode == "auto"
+
+Agent allowlist:
+- ``only <agent> may call|use <tool>``                   -> agent_id != <agent>
+
+Action (the policy's consequent clause only):
+- block intent (``not allowed``, ``not permitted``, ``may not``, ``must not``,
+  ``should not``, ``cannot``, ``can't``) -> action: block
+- ``warn``                                               -> action: warn
+- otherwise provide an explicit ``hints.action``; without one the action is
+  considered undetermined and the policy is not_enforceable.
+
+Notes
+-----
+- A leading ``if`` is stripped from field phrases, so the comparison templates
+  match both "if <field> is ..." and "<field> is ..." forms.
+- Conditions are parsed from the whole sentence; the action is resolved only
+  from the consequent clause (see ``_consequent_clause``) so a verb inside a
+  condition clause cannot set the enforcement action.
+"""
+
 from __future__ import annotations
 
 import re
@@ -14,22 +55,15 @@ from openagentpolicy.policies.schema import (
     PolicyAction,
     PolicyCompileResult,
     PolicyDocument,
-    PolicyRule,
     PolicyTrigger,
     PolicyType,
     TriggerEvent,
 )
 
+# A leading "if" is stripped later by _clean_field_phrase, so these unanchored
+# templates match both "if <field> is ..." and "<field> is ..." forms. Keep this
+# set small and non-overlapping; for broader English use the hybrid compiler.
 COMPARISON_PATTERNS: list[tuple[re.Pattern[str], ConditionOperator]] = [
-    (
-        re.compile(
-            r"if\s+(?P<field>[a-z][a-z0-9\s_]*?)\s+is\s+"
-            r"(?:greater than|more than|above)\s+"
-            r"(?P<value>[\d.]+)",
-            re.IGNORECASE,
-        ),
-        ConditionOperator.GT,
-    ),
     (
         re.compile(
             r"(?P<field>[a-z][a-z0-9\s_]*?)\s+is\s+"
@@ -70,8 +104,17 @@ NOT_ALLOWED_PHRASES = (
     "not permitted",
     "is not permitted",
     "may not",
+    "must not",
+    "should not",
     "cannot",
     "can't",
+)
+
+# Match block-intent phrases only as whole words (avoid substring false hits
+# such as "cannot" inside an unrelated token).
+NOT_ALLOWED_PATTERN = re.compile(
+    r"(?<![a-z])(?:" + "|".join(re.escape(p) for p in NOT_ALLOWED_PHRASES) + r")(?![a-z])",
+    re.IGNORECASE,
 )
 
 AGENT_ONLY_PATTERN = re.compile(
@@ -184,6 +227,41 @@ def _clean_field_phrase(phrase: str) -> str:
     return re.sub(r"^if\s+", "", phrase.strip(), flags=re.IGNORECASE)
 
 
+def _consequent_clause(normalized_text: str) -> str:
+    """Isolate the policy's action/consequent clause from its condition clause.
+
+    Action resolution must be tied to the main (consequent) clause, not to terms
+    that merely appear inside a condition clause. For example, in
+    "If the applicant cannot have prior defaults, escalate the case." the word
+    "cannot" describes a condition; only "escalate the case" is the action.
+
+    Returns an empty string when no consequent can be isolated (e.g. the text is
+    purely a condition), so the caller leaves the action ambiguous rather than
+    guessing a block.
+    """
+    text = normalized_text.strip()
+    if_match = re.search(r"(?<![a-z])if(?![a-z])", text)
+    if if_match is None:
+        # No condition marker; the whole statement carries the action intent.
+        return text
+
+    # "if <condition> then <action>"
+    then_match = re.search(r"(?<![a-z])then(?![a-z])", text[if_match.end() :])
+    if then_match is not None:
+        return text[if_match.end() + then_match.end() :].strip()
+
+    if if_match.start() == 0:
+        # "if <condition>, <action>"
+        comma = text.find(",")
+        if comma != -1:
+            return text[comma + 1 :].strip()
+        # Only a condition clause was provided; no consequent to act on.
+        return ""
+
+    # "<action> if <condition>"
+    return text[: if_match.start()].strip()
+
+
 class PolicyCompiler:
     """Rule-based compiler for English policies into structured policies."""
 
@@ -191,26 +269,7 @@ class PolicyCompiler:
         self.inventory = inventory or Inventory()
         self._index = InventoryIndex.from_inventory(self.inventory)
 
-    def with_inventory(self, inventory: Inventory) -> PolicyCompiler:
-        return PolicyCompiler(inventory)
-
     def compile_document(self, document: PolicyDocument) -> PolicyCompileResult:
-        if document.rules:
-            policies = [self._rule_to_policy(document, rule) for rule in document.rules]
-            if len(policies) == 1:
-                return PolicyCompileResult(
-                    policy_id=document.id,
-                    compile_status=CompileStatus.COMPILED,
-                    confidence=1.0,
-                    compiled_policy=policies[0],
-                )
-            return PolicyCompileResult(
-                policy_id=document.id,
-                compile_status=CompileStatus.NEEDS_REVIEW,
-                confidence=0.5,
-                message="Legacy multi-rule documents require review",
-            )
-
         if document.policy_type == PolicyType.ENGLISH:
             return self._compile_english_document(document)
 
@@ -495,73 +554,22 @@ class PolicyCompiler:
         if document.hints and "action" in document.hints:
             return PolicyAction.model_validate(document.hints["action"])
 
-        if any(phrase in normalized_text for phrase in NOT_ALLOWED_PHRASES):
+        # Only inspect the consequent clause so a verb inside the condition
+        # clause cannot determine the enforcement action.
+        consequent = _consequent_clause(normalized_text)
+        if not consequent:
+            return None
+
+        if NOT_ALLOWED_PATTERN.search(consequent):
             return PolicyAction(
                 type=ActionType.BLOCK,
                 message=document.name or "Policy violation",
             )
 
-        if "warn" in normalized_text:
+        if re.search(r"(?<![a-z])warn(?![a-z])", consequent):
             return PolicyAction(type=ActionType.WARN, message=document.name)
 
         return None
-
-    def _rule_to_policy(self, document: PolicyDocument, rule: PolicyRule) -> Policy:
-        conditions = self._legacy_conditions_to_tree(rule.conditions)
-        effect = rule.effect
-        action_type = (
-            ActionType.BLOCK
-            if effect in {"deny", "block"}
-            else ActionType.ALLOW
-        )
-        return Policy(
-            id=rule.id,
-            name=document.name,
-            enabled=document.enabled,
-            policy_type=PolicyType.STRUCTURED,
-            trigger=PolicyTrigger(
-                event=TriggerEvent.BEFORE_TOOL_CALL,
-                tool_id=rule.tool,
-            ),
-            conditions=conditions,
-            action=PolicyAction(type=action_type, message=rule.reason),
-        )
-
-    def _legacy_conditions_to_tree(
-        self, conditions: dict[str, object]
-    ) -> Condition | None:
-        if not conditions:
-            return None
-        leaves: list[Condition] = []
-        for key, expected in conditions.items():
-            field_path = key if key.startswith("tool_args.") else f"tool_args.{key}"
-            if isinstance(expected, dict):
-                for op_key, value in expected.items():
-                    operator = {
-                        "gt": ConditionOperator.GT,
-                        "gte": ConditionOperator.GTE,
-                        "lt": ConditionOperator.LT,
-                        "lte": ConditionOperator.LTE,
-                        "eq": ConditionOperator.EQ,
-                    }.get(op_key, ConditionOperator.EQ)
-                    leaves.append(
-                        Condition(
-                            field=field_path,
-                            operator=operator,
-                            value=value,
-                        )
-                    )
-            else:
-                leaves.append(
-                    Condition(
-                        field=field_path,
-                        operator=ConditionOperator.EQ,
-                        value=expected,
-                    )
-                )
-        if len(leaves) == 1:
-            return leaves[0]
-        return Condition(all=leaves)
 
 
 def _parse_number(raw: str) -> float | int:

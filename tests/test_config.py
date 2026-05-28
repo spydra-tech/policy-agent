@@ -57,7 +57,16 @@ def test_runtime_loads_inventory_and_policies_on_configure(tmp_path: Path) -> No
     policies_dir = root / "policies"
     policies_dir.mkdir(parents=True)
     (root / "inventory.yaml").write_text(
-        yaml.dump({"tools": [{"id": "approve_loan"}]}),
+        yaml.dump(
+            {
+                "tools": [
+                    {
+                        "id": "approve_loan",
+                        "arguments": {"approved_amount": {"type": "number"}},
+                    }
+                ]
+            }
+        ),
         encoding="utf-8",
     )
     (policies_dir / "block.yaml").write_text(

@@ -243,7 +243,7 @@ class PolicyProvider:
                     policies.append(compiled)
                 continue
 
-            if document.rules or document.policy_type in {
+            if document.policy_type in {
                 PolicyType.STRUCTURED,
                 PolicyType.COMPILED,
             }:
@@ -259,10 +259,6 @@ class PolicyProvider:
 
         self._last_compile_results = results
         return policies, results
-
-    def load_compiled(self) -> list[Policy]:
-        """Backward-compatible alias for load_policies."""
-        return self.load_policies()
 
     def _log_compile_result(self, result: PolicyCompileResult) -> None:
         if result.compile_status == CompileStatus.COMPILED:

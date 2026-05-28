@@ -11,6 +11,9 @@ class UnresolvedPolicyField:
     policy_id: str
     field: str
     reason: str
+    # "field" = an unknown/unavailable condition field (can fail open silently);
+    # "action" = an action that is invalid for the trigger (does not fail open).
+    kind: str = "field"
 
     def format(self) -> str:
         return f"Policy {self.policy_id}: field {self.field!r} {self.reason}"
@@ -53,6 +56,7 @@ def validate_policy_fields(
                         "must be one of warn/log_only/redact_result/escalate "
                         "for after_tool_call policies"
                     ),
+                    kind="action",
                 )
             )
         issues.extend(

@@ -13,6 +13,7 @@ def _write_app(
     *,
     policy: dict,
     fail_on_unresolved_fields: bool,
+    default_action: str = "allow",
 ) -> Path:
     root = tmp_path / "app"
     policies_dir = root / "policies"
@@ -43,7 +44,7 @@ def _write_app(
                     "compile_on_startup": True,
                 },
                 "enforcement": {
-                    "default_action": "allow",
+                    "default_action": default_action,
                     "fail_on_unresolved_fields": fail_on_unresolved_fields,
                 },
             }
@@ -73,10 +74,13 @@ def test_startup_fails_when_unresolved_fields_enabled(tmp_path: Path) -> None:
         PolicyRuntime.from_config(config)
 
 
-def test_startup_allows_when_unresolved_fields_disabled(tmp_path: Path) -> None:
+def test_unknown_field_warns_when_failing_closed(tmp_path: Path) -> None:
+    # default_action: block means a non-matching policy still blocks, so an
+    # unknown field is downgraded to a warning rather than a startup failure.
     config = _write_app(
         tmp_path,
         fail_on_unresolved_fields=False,
+        default_action="block",
         policy={
             "id": "bad-final-response-usage",
             "policy_type": "structured",
@@ -85,6 +89,54 @@ def test_startup_allows_when_unresolved_fields_disabled(tmp_path: Path) -> None:
                 "field": "tool_args.approved_amount",
                 "operator": ">",
                 "value": 1,
+            },
+            "action": {"type": "block"},
+        },
+    )
+    runtime = PolicyRuntime.from_config(config)
+    assert runtime.policies
+
+
+def test_unknown_field_fails_open_is_rejected_by_default(tmp_path: Path) -> None:
+    # default_action: allow (fail open) + a misspelled field must hard-fail at
+    # startup even when fail_on_unresolved_fields is not set, otherwise the
+    # guarded action silently fails open.
+    config = _write_app(
+        tmp_path,
+        fail_on_unresolved_fields=False,
+        default_action="allow",
+        policy={
+            "id": "typo-field",
+            "policy_type": "structured",
+            "trigger": {"event": "before_tool_call", "tool_id": "approve_loan"},
+            "conditions": {
+                "field": "tool_args.approved_amont",
+                "operator": ">",
+                "value": 1,
+            },
+            "action": {"type": "block"},
+        },
+    )
+    with pytest.raises(ValueError, match="approved_amont"):
+        PolicyRuntime.from_config(config)
+
+
+def test_after_tool_call_block_warns_when_not_strict(tmp_path: Path) -> None:
+    # An after_tool_call block does not fail open (runtime ignores/logs it), so
+    # with fail_on_unresolved_fields=false it should warn and load even under
+    # default_action: allow.
+    config = _write_app(
+        tmp_path,
+        fail_on_unresolved_fields=False,
+        default_action="allow",
+        policy={
+            "id": "after-block",
+            "policy_type": "structured",
+            "trigger": {"event": "after_tool_call", "tool_id": "approve_loan"},
+            "conditions": {
+                "field": "tool_result.status",
+                "operator": "==",
+                "value": "approved",
             },
             "action": {"type": "block"},
         },

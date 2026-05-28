@@ -37,7 +37,7 @@ def _inventory() -> Inventory:
     )
 
 
-def test_ai_compiler_compiles_when_payload_valid_and_confident() -> None:
+def test_ai_compiler_compiles_when_deterministic_compiler_agrees() -> None:
     document = PolicyDocument(
         id="p1",
         policy_type=PolicyType.ENGLISH,
@@ -65,22 +65,21 @@ def test_ai_compiler_compiles_when_payload_valid_and_confident() -> None:
                 },
                 "action": {"type": "block", "message": "Too high"},
             },
-            "confidence": 0.95,
         }
     )
-    compiler = AIEnglishCompiler(
-        _inventory(),
-        translator=translator,
-        min_confidence=0.85,
-    )
+    compiler = AIEnglishCompiler(_inventory(), translator=translator)
     result = compiler.compile_document(document)
     assert result.compile_status == CompileStatus.COMPILED
+    assert result.confidence == 1.0
     assert result.compiled_policy is not None
     assert result.compiled_policy.trigger is not None
     assert result.compiled_policy.trigger.tool_id == "approve_loan"
 
 
-def test_ai_compiler_marks_low_confidence_for_review() -> None:
+def test_self_reported_confidence_is_not_the_gate() -> None:
+    # Model claims high confidence but its structured output disagrees with the
+    # deterministic compiler (drops the approval_mode condition). Self-reported
+    # confidence must NOT promote this to compiled; it goes to needs_review.
     document = PolicyDocument(
         id="p2",
         policy_type=PolicyType.ENGLISH,
@@ -99,14 +98,41 @@ def test_ai_compiler_marks_low_confidence_for_review() -> None:
                 },
                 "action": {"type": "block"},
             },
-            "confidence": 0.4,
+            "confidence": 0.99,
         }
     )
-    compiler = AIEnglishCompiler(
-        _inventory(),
-        translator=translator,
-        min_confidence=0.85,
+    compiler = AIEnglishCompiler(_inventory(), translator=translator)
+    result = compiler.compile_document(document)
+    assert result.compile_status == CompileStatus.NEEDS_REVIEW
+    assert result.compiled_policy is not None
+
+
+def test_ai_only_output_without_corroboration_needs_review() -> None:
+    # The deterministic compiler cannot handle metadata-based rules, so even a
+    # schema-valid, inventory-aligned AI policy is left for human review rather
+    # than auto-activated.
+    document = PolicyDocument(
+        id="p_meta",
+        policy_type=PolicyType.ENGLISH,
+        english="Block approvals when the request region is restricted.",
     )
+    translator = _FakeTranslator(
+        {
+            "policy": {
+                "id": "p_meta",
+                "policy_type": "structured",
+                "trigger": {"event": "before_tool_call", "tool_id": "approve_loan"},
+                "conditions": {
+                    "field": "metadata.region",
+                    "operator": "==",
+                    "value": "restricted",
+                },
+                "action": {"type": "block"},
+            },
+            "confidence": 0.97,
+        }
+    )
+    compiler = AIEnglishCompiler(_inventory(), translator=translator)
     result = compiler.compile_document(document)
     assert result.compile_status == CompileStatus.NEEDS_REVIEW
     assert result.compiled_policy is not None
@@ -153,7 +179,6 @@ def test_hybrid_falls_back_to_rule_based_when_ai_not_compiled() -> None:
     ai_compiler = AIEnglishCompiler(
         _inventory(),
         translator=_FakeTranslator(None),
-        min_confidence=0.85,
     )
     hybrid = HybridEnglishCompiler(
         primary=ai_compiler,
@@ -162,3 +187,20 @@ def test_hybrid_falls_back_to_rule_based_when_ai_not_compiled() -> None:
     result = hybrid.compile_document(document)
     assert result.compile_status == CompileStatus.COMPILED
     assert result.compiled_policy is not None
+
+
+def test_hybrid_defers_to_deterministic_when_ai_unavailable() -> None:
+    # When the AI translator is unavailable (no signal), the hybrid result must
+    # reflect the deterministic outcome (not_enforceable here) rather than be
+    # masked by a generic "AI unavailable" needs_review.
+    document = PolicyDocument(
+        id="p5",
+        policy_type=PolicyType.ENGLISH,
+        english="If KYC level is high, block.",
+    )
+    hybrid = HybridEnglishCompiler(
+        primary=AIEnglishCompiler(_inventory(), translator=_FakeTranslator(None)),
+        fallback=RuleBasedEnglishCompiler(_inventory()),
+    )
+    result = hybrid.compile_document(document)
+    assert result.compile_status == CompileStatus.NOT_ENFORCEABLE

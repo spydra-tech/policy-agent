@@ -12,14 +12,13 @@ from openagentpolicy.annotations import (
 from openagentpolicy.compiler import compile_english_policy
 from openagentpolicy.config import EngineConfig, load_config
 from openagentpolicy.runtime.decisions import DecisionType, PolicyDecision
-from openagentpolicy.runtime.engine import PolicyEngine, PolicyRuntime
+from openagentpolicy.runtime.engine import PolicyRuntime
 
 __all__ = [
     "AgentSession",
     "DecisionType",
     "EngineConfig",
     "PolicyDecision",
-    "PolicyEngine",
     "PolicyRuntime",
     "PolicyViolation",
     "agent_session",

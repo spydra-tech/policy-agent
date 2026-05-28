@@ -77,9 +77,8 @@ class OpenAITranslator:
                     "policy_type": "structured",
                     "trigger": {"event": "before_tool_call", "tool_id": "string|optional"},
                     "conditions": {},
-                    "action": {"type": "allow|block|warn|log_only|modify_args|redirect_tool"},
+                    "action": {"type": "allow|block|warn|log_only|modify_args|redact_result|escalate"},
                 },
-                "confidence": 0.0,
                 "message": "optional string",
                 "missing_fields": [],
             },
@@ -99,16 +98,28 @@ class OpenAITranslator:
 
 
 class AIEnglishCompiler:
+    """Compile English via an LLM, but only auto-activate when grounded.
+
+    Safety is not gated on the model's self-reported confidence (an LLM emitting
+    a number about itself is not a calibrated probability). The gates are:
+
+    1. Schema validity of the produced policy.
+    2. Inventory alignment (tool/field existence).
+    3. Deterministic corroboration: the rule-based compiler must independently
+       produce a semantically equivalent structured policy. Agreement is the
+       trust signal; without it the result is needs_review for a human.
+    """
+
     def __init__(
         self,
         inventory: Inventory,
         *,
         translator: AITranslator,
-        min_confidence: float = 0.85,
+        corroborator: "RuleBasedEnglishCompiler | None" = None,
     ) -> None:
         self.inventory = inventory
         self.translator = translator
-        self.min_confidence = min_confidence
+        self._corroborator = corroborator or RuleBasedEnglishCompiler(inventory)
 
     def compile_document(self, document: PolicyDocument) -> PolicyCompileResult:
         payload = self.translator.translate(document=document, inventory=self.inventory)
@@ -146,24 +157,38 @@ class AIEnglishCompiler:
                 missing_fields=payload.get("missing_fields") or [],
             )
 
-        confidence = float(payload.get("confidence") or 0.0)
-        if confidence < self.min_confidence:
+        structured = policy.model_copy(update={"policy_type": PolicyType.STRUCTURED})
+        missing_fields = payload.get("missing_fields") or []
+
+        # Grounded corroboration: does the deterministic compiler independently
+        # agree? Agreement -> trust and auto-compile. Otherwise -> human review.
+        corroboration = self._corroborator.compile_document(document)
+        corroborated = (
+            corroboration.compile_status == CompileStatus.COMPILED
+            and corroboration.compiled_policy is not None
+            and _policies_agree(structured, corroboration.compiled_policy)
+        )
+        if corroborated:
             return PolicyCompileResult(
                 policy_id=document.id,
-                compile_status=CompileStatus.NEEDS_REVIEW,
-                confidence=confidence,
-                compiled_policy=policy,
+                compile_status=CompileStatus.COMPILED,
+                confidence=1.0,
+                compiled_policy=structured,
                 message=payload.get("message")
-                or f"AI confidence below threshold {self.min_confidence}",
-                missing_fields=payload.get("missing_fields") or [],
+                or "AI output corroborated by deterministic compiler",
+                missing_fields=missing_fields,
             )
         return PolicyCompileResult(
             policy_id=document.id,
-            compile_status=CompileStatus.COMPILED,
-            confidence=confidence,
-            compiled_policy=policy.model_copy(update={"policy_type": PolicyType.STRUCTURED}),
-            message=payload.get("message"),
-            missing_fields=payload.get("missing_fields") or [],
+            compile_status=CompileStatus.NEEDS_REVIEW,
+            confidence=0.5,
+            compiled_policy=structured,
+            message=payload.get("message")
+            or (
+                "AI output not corroborated by the deterministic compiler; "
+                "requires human review before activation"
+            ),
+            missing_fields=missing_fields,
         )
 
 
@@ -184,7 +209,14 @@ class HybridEnglishCompiler:
         fallback_result = self.fallback.compile_document(document)
         if fallback_result.compile_status == CompileStatus.COMPILED:
             return fallback_result
-        if ai_result.compile_status == CompileStatus.NEEDS_REVIEW:
+        # Prefer a genuine AI candidate that a human should review (it produced a
+        # schema-valid, inventory-aligned policy that simply wasn't corroborated).
+        # A bare needs_review with no policy means "no AI signal" (e.g. the
+        # translator is unavailable), so defer to the deterministic result.
+        if (
+            ai_result.compile_status == CompileStatus.NEEDS_REVIEW
+            and ai_result.compiled_policy is not None
+        ):
             return ai_result
         return fallback_result
 
@@ -209,7 +241,7 @@ def create_english_compiler(
     ai_compiler = AIEnglishCompiler(
         inventory,
         translator=translator,
-        min_confidence=float(ai_settings.get("require_review_below_confidence", 0.85)),
+        corroborator=rule_based,
     )
     if normalized == "ai":
         return ai_compiler
@@ -242,6 +274,75 @@ def _validate_inventory_alignment(policy: Policy, inventory: Inventory) -> str |
             continue
         return f"Unsupported condition field path: {field}"
     return None
+
+
+def _policies_agree(a: Policy, b: Policy) -> bool:
+    """Semantic equivalence of two structured policies (message text aside)."""
+    if a.trigger is None or b.trigger is None:
+        return False
+    if a.trigger.event != b.trigger.event:
+        return False
+    if (a.trigger.tool_id or None) != (b.trigger.tool_id or None):
+        return False
+    if (a.trigger.agent_id or None) != (b.trigger.agent_id or None):
+        return False
+    if a.action is None or b.action is None:
+        return False
+    if a.action.type != b.action.type:
+        return False
+    return _canonical_condition(a.conditions) == _canonical_condition(b.conditions)
+
+
+def _canonical_condition(condition: Any) -> Any:
+    """Order-independent canonical form of a condition tree for comparison."""
+    if condition is None:
+        return None
+    if getattr(condition, "is_leaf", False) and getattr(condition, "field", None):
+        operator = condition.operator.value if condition.operator else None
+        return (
+            "leaf",
+            condition.field,
+            operator,
+            _normalize_value(condition.value),
+            bool(getattr(condition, "case_sensitive", False)),
+        )
+    parts: list[Any] = []
+    if getattr(condition, "all", None):
+        parts.append(
+            (
+                "all",
+                tuple(
+                    sorted(
+                        (_canonical_condition(c) for c in condition.all), key=repr
+                    )
+                ),
+            )
+        )
+    if getattr(condition, "any", None):
+        parts.append(
+            (
+                "any",
+                tuple(
+                    sorted(
+                        (_canonical_condition(c) for c in condition.any), key=repr
+                    )
+                ),
+            )
+        )
+    not_group = getattr(condition, "not_", None)
+    if not_group is not None:
+        parts.append(("not", _canonical_condition(not_group)))
+    if len(parts) == 1:
+        return parts[0]
+    return ("group", tuple(sorted(parts, key=repr)))
+
+
+def _normalize_value(value: Any) -> Any:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return float(value)
+    return value
 
 
 def _collect_condition_fields(condition: Any) -> list[str]:

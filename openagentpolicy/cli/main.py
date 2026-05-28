@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from openagentpolicy import PolicyEngine
+from openagentpolicy import PolicyRuntime
 from openagentpolicy.cli.validate import (
     ValidationError,
     compile_policy_file,
@@ -130,7 +130,7 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "check":
-        engine = PolicyEngine.from_config(args.config)
+        engine = PolicyRuntime.from_config(args.config)
         arguments = json.loads(args.args)
         result = engine.check_tool_call(args.tool, arguments)
         print(json.dumps(result.model_dump(), indent=2))

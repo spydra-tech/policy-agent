@@ -119,33 +119,6 @@ def test_policy_provider_loads_and_compiles_directory(tmp_path: Path) -> None:
     assert policies[0].action.type == ActionType.BLOCK
 
 
-def test_policy_provider_loads_legacy_rules_yaml(tmp_path: Path) -> None:
-    policies_dir = tmp_path / "policies"
-    policies_dir.mkdir()
-    doc = {
-        "id": "limits",
-        "rules": [
-            {
-                "id": "cap",
-                "tool": "approve_loan",
-                "effect": "deny",
-                "conditions": {"amount": {"gt": 10000}},
-            }
-        ],
-    }
-    (policies_dir / "limits.yaml").write_text(
-        yaml.dump(doc), encoding="utf-8"
-    )
-
-    provider = PolicyProvider(
-        PoliciesConfig(provider="directory", path="policies"),
-        tmp_path,
-    )
-    policies = provider.load_policies()
-    assert len(policies) == 1
-    assert policies[0].id == "cap"
-
-
 def test_http_policy_provider_requires_requests() -> None:
     provider = HTTPPolicyProvider("https://example.com/policies.yaml")
     with pytest.raises(ImportError, match="requests"):

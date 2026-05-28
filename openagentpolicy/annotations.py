@@ -270,9 +270,7 @@ def _wrap_with_enforcement(func: Callable[..., Any], tool: Tool) -> Callable[...
             tool_result=tool_result,
             decision=after_decision,
         )
-        _apply_after_decision(after_decision)
-
-        return result
+        return _apply_after_decision(runtime, after_decision, result)
 
     return wrapper
 
@@ -373,15 +371,20 @@ def _apply_before_decision(
     elif decision.decision == DecisionType.MODIFY_ARGS:
         if decision.modified_args:
             bound_args = {**bound_args, **decision.modified_args}
-    elif decision.decision == DecisionType.REDIRECT_TOOL:
-        raise PolicyViolation(
-            decision.message or "redirect_tool not supported at runtime",
-            decision=decision,
-        )
     return bound_args
 
 
-def _apply_after_decision(decision: PolicyDecision) -> None:
+def _apply_after_decision(
+    runtime: PolicyRuntime, decision: PolicyDecision, result: Any
+) -> Any:
+    """Apply an after_tool_call decision to the returned value.
+
+    The tool has already executed, so side effects cannot be prevented here.
+    REDACT_RESULT actually redacts the value returned to the caller; the other
+    decisions can only observe (warn/log/escalate). Decisions that imply
+    preventing the call (block/modify_args) are not honored after the fact and
+    are logged as ignored.
+    """
     if decision.decision == DecisionType.WARN:
         logger.warning(
             "Policy warning after tool call: %s",
@@ -399,20 +402,29 @@ def _apply_after_decision(decision: PolicyDecision) -> None:
         )
     elif decision.decision == DecisionType.REDACT_RESULT:
         logger.info(
-            "Policy redact_result requested after tool call: %s",
+            "Policy redact_result after tool call: %s",
             decision.message or "policy redact",
         )
+        redactor = runtime.redactor
+        if redactor is None:
+            logger.warning(
+                "redact_result requested but no redactor is configured; "
+                "returning result unchanged"
+            )
+            return result
+        return redactor.redact_result(result)
     elif decision.decision in {
         DecisionType.BLOCK,
         DecisionType.MODIFY_ARGS,
-        DecisionType.REDIRECT_TOOL,
     }:
         logger.warning(
-            "Ignoring unsupported after_tool_call decision: %s (%s)",
+            "Ignoring unsupported after_tool_call decision: %s — side effects "
+            "have already occurred and cannot be prevented after the call (%s)",
             decision.decision.value,
             decision.message
             or f"{decision.decision.value} not supported after tool call",
         )
+    return result
 
 
 def _infer_parameters(func: Callable[..., Any]) -> list[str]:

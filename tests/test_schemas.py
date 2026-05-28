@@ -151,11 +151,6 @@ def test_modify_args_action_requires_set() -> None:
         PolicyAction(type=ActionType.MODIFY_ARGS)
 
 
-def test_redirect_tool_action_requires_target() -> None:
-    with pytest.raises(ValidationError):
-        PolicyAction(type=ActionType.REDIRECT_TOOL)
-
-
 def test_policy_event_defaults() -> None:
     event = PolicyEvent(event_type="before_tool_call", tool_id="t1")
     assert event.tool_args == {}

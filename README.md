@@ -15,7 +15,7 @@ Agentic applications usually fail in predictable ways:
 - Rules exist in docs/confluence but are not enforced uniformly in runtime code.
 
 `openagentpolicy` solves this by making policy checks part of execution, not just guidance:
-- Tool guardrails enforce constraints at `before_tool_call` / `after_tool_call`.
+- Tool guardrails enforce constraints at `before_tool_call` (can prevent the call) and observe results at `after_tool_call` (cannot prevent side effects). See [Event semantics](#event-semantics-before-vs-after-tool-call).
 - Agent context (`agent_id`, `metadata`) supports role- and workflow-based controls.
 - Final response checks enforce communication policy before user-visible output.
 - English policy authoring can be compiled to structured enforceable rules.
@@ -60,6 +60,34 @@ With response policy:
 - Faster policy updates (file or API source + runtime reload)
 - Better auditability (policy decisions appear in traces/audit logs)
 - Safer multi-agent scaling because controls are centralized
+
+## Event semantics: before vs after tool call
+
+Tool enforcement runs at two points, and they have **different capabilities**:
+
+| Event | Runs | Can prevent side effects? | Allowed actions |
+| --- | --- | --- | --- |
+| `before_tool_call` | before the tool executes | **Yes** | `block`, `modify_args`, `warn`, `log_only`, `allow` |
+| `after_tool_call` | after the tool has returned | **No** | `redact_result`, `warn`, `log_only`, `escalate` |
+
+Important: by the time `after_tool_call` runs, the tool has **already executed**
+and any side effects (writes, payments, emails) have **already happened**. An
+`after_tool_call` policy therefore cannot block, modify args, or redirect the
+call — those decisions are ignored (with a warning in logs).
+
+What `after_tool_call` *can* do:
+
+- `redact_result` — actually redacts the value returned to the caller using the
+  configured [privacy redactor](#privacy-and-pii-redaction) (key/schema rules +
+  optional PII scanning). This sanitizes what flows downstream, but does not
+  undo the side effect.
+- `warn` / `log_only` — record the condition.
+- `escalate` — emit an escalation signal for out-of-band review.
+
+If you need to *prevent* an action (the Example A failure mode — "don't approve
+above 5000 in auto mode"), the policy must trigger on `before_tool_call`. Put
+side-effecting work behind a `before_tool_call` guard; use `after_tool_call`
+only to sanitize or flag results you cannot stop.
 
 ## Authoring vs Runtime Modes
 
@@ -148,6 +176,54 @@ def run_agent(agent, task: str, metadata: dict) -> str:
         return agent.run(task)  # tools called inside remain policy-enforced
 ```
 
+## Scope and Limitations
+
+Read these before relying on `openagentpolicy` as a control. They are deliberate
+design boundaries, not bugs.
+
+### Enforcement is in-process, at the boundaries you wrap
+
+Policies only fire when a tool is invoked **through the decorated function in the
+same process**. The "framework-agnostic" claim holds at those boundaries and no
+further:
+
+- If a framework, planner, or scheduler invokes the *underlying* callable
+  directly (bypassing the `@policy_tool` wrapper), it is invisible to enforcement.
+- Remote/out-of-band tools (HTTP services, MCP servers, other processes) are not
+  intercepted unless the call into them is itself wrapped.
+- The output guard only sees text you explicitly pass to
+  `check_final_response(...)` / `check_final_response_any(...)`.
+
+Treat the decorated callable and the explicit output check as the trust boundary.
+Anything reaching a tool by another path is unenforced.
+
+### `before_final_response` is a string check, not semantic filtering
+
+Final-response policies match on the response text using `contains` (case-
+insensitive by default) and `regex` operators. This is literal string matching:
+
+- It catches `"guaranteed approval"` but **not** `"approval is guaranteed"`,
+  `"we guarantee you'll be approved"`, or other paraphrases.
+- It is not a semantic classifier and does not understand intent or meaning.
+
+Use it for known forbidden phrases and patterns. Do not mistake it for an
+output-safety/LLM-judge layer; pair it with one if you need semantic coverage.
+
+### Default posture is "permit unless explicitly blocked"
+
+With `default_action: allow` (the default) plus fail-open field resolution, the
+system's safety stance is **allow by default, block only on an explicit match**.
+A policy that never matches (or whose tool is never wrapped) results in the
+action being permitted.
+
+For regulated deployments (BFSI, healthcare), this default is a deliberate
+decision to revisit. Many such buyers will want **`default_action: block`** as
+the baseline — at minimum for `side_effect: true`, high-risk tools — so that the
+posture becomes "deny unless explicitly allowed." Load-time validation already
+hard-fails on unresolved fields when `default_action: allow` (see
+[Unresolved field safety](#unresolved-field-safety-fail-open-protection)), but
+that only protects against typos, not against unwrapped or out-of-band calls.
+
 ## Configuration
 
 ```yaml
@@ -178,6 +254,7 @@ enforcement:
   default_action: allow
   on_policy_error: allow_with_warning
   audit_enabled: true
+  fail_on_unresolved_fields: false  # see note below
 
 privacy:
   redact_keys: [password, token, secret, pan, aadhaar, ssn]
@@ -188,6 +265,26 @@ privacy:
     entities: [CREDIT_CARD, EMAIL_ADDRESS, PHONE_NUMBER, IN_PAN, IN_AADHAAR, US_SSN]
     scan_fields: [final_response, tool_result, tool_args]
 ```
+
+### Unresolved field safety (fail-open protection)
+
+Every policy condition field is validated against the event context and
+inventory at load time. A field that does not resolve (a typo like
+`tool_args.amount` instead of `tool_args.approved_amount`, or a field not
+available for the trigger event) is handled as follows:
+
+- `fail_on_unresolved_fields: true` — startup fails on any unresolved field.
+- `fail_on_unresolved_fields: false` (default):
+  - If `default_action: allow` (**fail open**), unresolved condition fields are
+    still rejected at startup. A misspelled field would otherwise silently never
+    match and allow the guarded action — the worst outcome for a governance
+    tool, so this is treated as a hard error.
+  - If `default_action: block` (**fail closed**), unresolved fields are logged
+    as warnings, because a non-matching policy still blocks.
+
+Action-shape problems (e.g. a `block` action on `after_tool_call`, which the
+runtime cannot honor) only fail startup under `fail_on_unresolved_fields: true`,
+since they do not fail open.
 
 ## Privacy and PII Redaction
 
@@ -336,11 +433,25 @@ get_runtime().reload()
 
 ## English Policy Compiler Modes (Rule-Based, AI, Hybrid)
 
-English policies can now be compiled using three strategies:
+English policies can be compiled using three strategies:
 
-- `rule_based` (default): deterministic regex + inventory phrase matching
-- `ai`: AI-only conversion to structured policy (still schema/inventory validated)
-- `hybrid`: AI first, then deterministic fallback when AI output is uncertain/invalid
+- `hybrid` (**default; recommended for free-form authoring**): AI first, then
+  deterministic fallback. Use this when authors write policies in natural
+  language. If the AI translator is unavailable (no API key/SDK/response), it
+  degrades gracefully to the rule-based result — no network dependency is
+  required for startup.
+- `rule_based` (**locked template grammar**): deterministic matching of a small,
+  fixed set of sentence shapes against inventory. It does not attempt to parse
+  arbitrary English — anything outside the documented grammar is reported as
+  `not_enforceable`/`needs_review` rather than guessed. Choose this when you want
+  a fixed, auditable grammar with no model calls.
+- `ai`: LLM conversion to structured policy, still schema/inventory validated and
+  corroborated by the rule-based compiler before activation.
+
+The rule-based grammar is intentionally small and is **not** meant to grow to
+cover natural English. If you find yourself wanting another sentence pattern,
+prefer `hybrid` rather than expanding the regex set. The exact supported grammar
+is documented below under "Rule-based grammar (locked templates)".
 
 ### Config
 
@@ -349,32 +460,45 @@ policies:
   provider: directory
   path: ./policies
   support_english: true
-  english_compiler: hybrid        # rule_based | ai | hybrid
+  english_compiler: hybrid        # default; one of: hybrid | rule_based | ai
   ai:
     model: gpt-4.1-mini
     api_key_env: OPENAI_API_KEY
     base_url: null                # optional custom endpoint
-    require_review_below_confidence: 0.85
 ```
+
+> Note: there is no confidence threshold. A model's self-reported confidence is
+> not a calibrated probability, so it is not used as a safety gate. AI output is
+> auto-`compiled` only when the deterministic rule-based compiler independently
+> produces an equivalent structured policy (see Safety model below).
 
 ### Mode behavior
 
 - `rule_based`
   - Uses deterministic parsing from `openagentpolicy/policies/compiler.py`
   - Best for controlled policy templates and strict reproducibility
+  - Supports only the fixed grammar documented below; out-of-grammar text is
+    not guessed
 
 - `ai`
   - Uses an LLM translator to generate structured policy JSON
   - Validates generated policy with schema + inventory alignment checks
+  - Corroborates against the deterministic rule-based compiler
   - Returns:
-    - `compiled` when valid and confidence >= threshold
-    - `needs_review` when confidence is low or output shape is invalid
+    - `compiled` when valid, inventory-aligned, AND the deterministic compiler
+      independently produces an equivalent structured policy
+    - `needs_review` when output is uncorroborated (the deterministic compiler
+      disagrees or cannot independently compile the rule), or shape is invalid
     - `not_enforceable` when policy references unknown tools/fields
 
 - `hybrid`
   - Tries AI first
-  - If AI does not produce `compiled`, runs rule-based compiler
-  - Uses deterministic output when fallback succeeds
+  - If AI does not produce `compiled`, runs the rule-based compiler
+  - Uses deterministic output when the fallback succeeds
+  - Surfaces a genuine AI candidate (schema-valid, inventory-aligned, but
+    uncorroborated) as `needs_review`; if there is no AI signal at all (e.g. the
+    translator is unavailable), it defers to the deterministic result instead of
+    masking it with a generic review status
 
 ### Runtime requirements for AI mode
 
@@ -391,10 +515,43 @@ Even in AI mode, generated policy is never enforced blindly:
 1. Parse model output as JSON
 2. Validate against `Policy` schema
 3. Validate `tool_id` and condition field paths against inventory
-4. Apply confidence threshold
+4. Require deterministic corroboration: the rule-based compiler must
+   independently produce a semantically equivalent structured policy
 5. Enforce only `compiled` policies
 
-This keeps natural-language flexibility while preserving enforcement safety.
+The trust signal is agreement between an LLM and an independent deterministic
+compiler — not a self-reported confidence score. Uncorroborated AI output is
+surfaced as `needs_review` for a human to approve, never auto-activated. This
+keeps natural-language flexibility while preserving enforcement safety.
+
+### Rule-based grammar (locked templates)
+
+The rule-based compiler recognizes only the following sentence shapes. A leading
+`if` is optional for the comparison templates. Terms in `<...>` are resolved
+against inventory (argument names, aliases, descriptions, and `allowed_values`);
+unresolved terms make the policy `not_enforceable`.
+
+| English template | Compiles to |
+| --- | --- |
+| `<field> is greater than\|more than\|above <number>` | `field > number` |
+| `<field> is less than\|below <number>` | `field < number` |
+| `<field> is equal to <number>` | `field == number` |
+| `if <field> is missing` | `field not_exists` |
+| value phrase from `allowed_values` (e.g. `auto approval`) | `field == "<value>"` |
+| `only <agent> may call\|use <tool>` | `agent_id != <agent>` |
+
+Action is taken from the policy's **consequent clause** only:
+
+- block intent — `not allowed`, `not permitted`, `may not`, `must not`,
+  `should not`, `cannot`, `can't` → `action: block`
+- `warn` → `action: warn`
+- otherwise supply an explicit `hints.action`; without one the action is
+  undetermined and the policy is `not_enforceable` (it will not silently block).
+
+Anything not matching the above is out of grammar. Do not extend this set to
+chase natural English — switch the policy (or the runtime) to `hybrid` instead.
+The authoritative definition lives in the module docstring of
+`openagentpolicy/policies/compiler.py`.
 
 ## Policy Ladder: Simple to Complex
 
@@ -628,7 +785,10 @@ openagentpolicy generate-inventory \
   --output generated_inventory.yaml
 ```
 
-### Legacy: full engine check
+### Imperative engine check
+
+Run a single tool-call decision against the configured runtime, without wrapping
+any code:
 
 ```bash
 openagentpolicy check --config openagentpolicy.yaml --tool approve_loan \

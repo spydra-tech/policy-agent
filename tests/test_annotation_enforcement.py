@@ -202,3 +202,88 @@ def test_after_tool_call_block_is_ignored(tmp_path: Path) -> None:
 
     result = approve_loan("app-7", 42.0)
     assert result["status"] == "approved"
+
+
+def test_after_tool_call_redact_result_redacts_returned_value(tmp_path: Path) -> None:
+    config = _write_enforcement_fixture(
+        tmp_path,
+        tools=[{"id": "get_customer_profile"}],
+        policies=[
+            {
+                "id": "redact-after",
+                "trigger": {
+                    "event": "after_tool_call",
+                    "tool_id": "get_customer_profile",
+                },
+                "conditions": {
+                    "field": "tool_result.status",
+                    "operator": "==",
+                    "value": "ok",
+                },
+                "action": {"type": "redact_result", "message": "redact secrets"},
+            }
+        ],
+    )
+    configure(config)
+
+    @policy_tool
+    def get_customer_profile(customer_id: str) -> dict[str, str]:
+        return {"status": "ok", "token": "super-secret-token", "name": "Asha"}
+
+    result = get_customer_profile("cust-1")
+    # token matches default redact_keys, so the returned value is masked.
+    assert result["token"] == "***REDACTED***"
+    assert result["status"] == "ok"
+    assert result["name"] == "Asha"
+
+
+def test_after_tool_call_redact_result_scans_pii_in_result(tmp_path: Path) -> None:
+    root = tmp_path / "app"
+    policies_dir = root / "policies"
+    policies_dir.mkdir(parents=True)
+    (policies_dir / "policy.yaml").write_text(
+        yaml.dump(
+            {
+                "id": "redact-pii",
+                "trigger": {
+                    "event": "after_tool_call",
+                    "tool_id": "get_customer_profile",
+                },
+                "conditions": {
+                    "field": "tool_result.status",
+                    "operator": "==",
+                    "value": "ok",
+                },
+                "action": {"type": "redact_result"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (root / "inventory.yaml").write_text(
+        yaml.dump({"tools": [{"id": "get_customer_profile"}]}), encoding="utf-8"
+    )
+    (root / "openagentpolicy.yaml").write_text(
+        yaml.dump(
+            {
+                "inventory": {"provider": "file", "path": "./inventory.yaml"},
+                "policies": {"provider": "directory", "path": "./policies"},
+                "privacy": {
+                    "pii_detection": {
+                        "enabled": True,
+                        "engine": "regex",
+                        "entities": ["EMAIL_ADDRESS"],
+                        "scan_fields": ["tool_result"],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    configure(root / "openagentpolicy.yaml")
+
+    @policy_tool
+    def get_customer_profile(customer_id: str) -> dict[str, str]:
+        return {"status": "ok", "summary": "email john@example.com"}
+
+    result = get_customer_profile("cust-1")
+    assert "john@example.com" not in result["summary"]

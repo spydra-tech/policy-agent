@@ -36,7 +36,7 @@ class PoliciesConfig(BaseModel):
     support_english: bool = True
     compile_on_startup: bool = True
     require_compiled: bool = False
-    english_compiler: str = "rule_based"
+    english_compiler: str = "hybrid"
     ai: dict[str, Any] = Field(default_factory=dict)
 
 

@@ -130,6 +130,64 @@ def test_english_agent_only_allowlist_compiles() -> None:
     assert policy.conditions.value == "loan-agent"
 
 
+def test_inferred_action_uses_consequent_clause_without_hints() -> None:
+    inventory = _loan_inventory()
+    document = PolicyDocument(
+        id="policy_auto_approval_threshold",
+        policy_type=PolicyType.ENGLISH,
+        english=(
+            "If approved amount is greater than 5000, "
+            "auto approval is not allowed."
+        ),
+    )
+
+    result = PolicyCompiler(inventory).compile_document(document)
+
+    assert result.compile_status == CompileStatus.COMPILED
+    assert result.compiled_policy is not None
+    assert result.compiled_policy.action is not None
+    assert result.compiled_policy.action.type == ActionType.BLOCK
+
+
+def test_block_verb_in_condition_clause_does_not_force_block() -> None:
+    """A block-intent word in the condition clause must not set the action.
+
+    Old behavior scanned the whole text and would compile this to a confident
+    (and wrong) BLOCK. The consequent here ("escalate the case") has no
+    recognized action verb, so the policy must be not_enforceable rather than
+    silently blocking.
+    """
+    inventory = _loan_inventory()
+    document = PolicyDocument(
+        id="policy_escalation",
+        policy_type=PolicyType.ENGLISH,
+        english=(
+            "If approved amount is greater than 5000 and the agent cannot "
+            "override, escalate the case."
+        ),
+    )
+
+    result = PolicyCompiler(inventory).compile_document(document)
+
+    assert result.compile_status == CompileStatus.NOT_ENFORCEABLE
+    assert result.compiled_policy is None
+    assert "action" in (result.message or "").lower()
+
+
+def test_pure_condition_without_consequent_is_not_enforceable() -> None:
+    inventory = _loan_inventory()
+    document = PolicyDocument(
+        id="policy_pure_condition",
+        policy_type=PolicyType.ENGLISH,
+        english="If approved amount is greater than 5000 the agent cannot override",
+    )
+
+    result = PolicyCompiler(inventory).compile_document(document)
+
+    assert result.compile_status == CompileStatus.NOT_ENFORCEABLE
+    assert result.compiled_policy is None
+
+
 def test_missing_kyc_field_returns_not_enforceable() -> None:
     inventory = _loan_inventory()
     document = PolicyDocument(

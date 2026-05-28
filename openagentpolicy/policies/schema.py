@@ -47,7 +47,6 @@ class ActionType(str, Enum):
     REDACT_RESULT = "redact_result"
     ESCALATE = "escalate"
     MODIFY_ARGS = "modify_args"
-    REDIRECT_TOOL = "redirect_tool"
 
 
 class PolicyTrigger(BaseModel):
@@ -96,16 +95,11 @@ class PolicyAction(BaseModel):
     type: ActionType
     message: str | None = None
     set: dict[str, Any] | None = None
-    target_tool: str | None = None
-    args: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def validate_action_fields(self) -> PolicyAction:
         if self.type == ActionType.MODIFY_ARGS and not self.set:
             raise ValueError("modify_args action requires set")
-        if self.type == ActionType.REDIRECT_TOOL:
-            if not self.target_tool:
-                raise ValueError("redirect_tool action requires target_tool")
         return self
 
 
@@ -162,7 +156,7 @@ class PolicyCompileResult(BaseModel):
 
 
 class PolicyDocument(BaseModel):
-    """Load-time document: accepts Policy fields, English text, or legacy rules."""
+    """Load-time document: accepts structured Policy fields or English text."""
 
     id: str
     name: str | None = None
@@ -176,7 +170,6 @@ class PolicyDocument(BaseModel):
     source: dict[str, Any] | None = None
     validation: dict[str, Any] | None = None
     hints: dict[str, Any] | None = None
-    rules: list["PolicyRule"] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_document_shape(self) -> PolicyDocument:
@@ -187,17 +180,9 @@ class PolicyDocument(BaseModel):
                 raise ValueError(
                     "english policies cannot define trigger/conditions/action"
                 )
-            if self.rules:
-                raise ValueError("english policies cannot define legacy rules")
             return self
         if self.policy_type in {PolicyType.STRUCTURED, PolicyType.COMPILED} and self.english:
             raise ValueError("structured/compiled policies cannot include english text")
-        if self.rules:
-            if self.trigger is not None or self.conditions is not None or self.action is not None:
-                raise ValueError(
-                    "structured policy documents cannot mix legacy rules with trigger/conditions/action"
-                )
-            return self
         if self.trigger is None:
             raise ValueError("structured/compiled policies require trigger")
         if self.conditions is None:
@@ -211,10 +196,6 @@ class PolicyDocument(BaseModel):
         return (self.english or "").strip() or None
 
     def to_policy(self) -> Policy:
-        if self.rules:
-            raise ValueError(
-                "legacy rules must be compiled before converting to Policy"
-            )
         return Policy(
             id=self.id,
             name=self.name,
@@ -227,18 +208,3 @@ class PolicyDocument(BaseModel):
             source=self.source,
             validation=self.validation,
         )
-
-
-# Legacy models used by compiler/evaluator adapters (deprecated)
-class PolicyRule(BaseModel):
-    id: str
-    tool: str
-    effect: str = "deny"
-    reason: str = ""
-    conditions: dict[str, object] = Field(default_factory=dict)
-
-
-class CompiledPolicy(BaseModel):
-    id: str
-    name: str | None = None
-    rules: list[PolicyRule] = Field(default_factory=list)

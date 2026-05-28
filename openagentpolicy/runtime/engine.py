@@ -21,6 +21,7 @@ from openagentpolicy.runtime.decisions import DecisionType, PolicyDecision
 from openagentpolicy.runtime.evaluator import PolicyEvaluator, build_evaluation_context
 from openagentpolicy.runtime.events import PolicyEvent
 from openagentpolicy.runtime.policy_field_validation import (
+    UnresolvedPolicyField,
     UnresolvedPolicyFieldsError,
     validate_policy_fields,
 )
@@ -69,6 +70,10 @@ class PolicyRuntime:
     @property
     def trace_recorder(self) -> TraceRecorder | None:
         return self._trace_recorder
+
+    @property
+    def redactor(self) -> PrivacyRedactor | None:
+        return self._redactor
 
     @property
     def inventory(self) -> Inventory:
@@ -134,24 +139,39 @@ class PolicyRuntime:
             self._raise_if_unenforceable(results)
             unresolved = validate_policy_fields(policies, self.inventory)
             if unresolved:
-                error = UnresolvedPolicyFieldsError(unresolved)
-                if self.config.enforcement.fail_on_unresolved_fields:
-                    raise error
+                blocking = self._blocking_field_issues(unresolved)
+                if blocking:
+                    raise UnresolvedPolicyFieldsError(blocking)
                 for issue in unresolved:
                     logger.warning(issue.format())
             return policies, results
+        except UnresolvedPolicyFieldsError:
+            raise
+        except UnenforceablePoliciesError:
+            raise
         except Exception as exc:
-            if (
-                self.config.enforcement.fail_on_unresolved_fields
-                and isinstance(exc, UnresolvedPolicyFieldsError)
-            ):
-                raise
-            if (
-                self.config.enforcement.fail_on_unenforceable
-                and isinstance(exc, UnenforceablePoliciesError)
-            ):
-                raise
             return self._handle_load_error("policies", exc, ([], []))
+
+    def _blocking_field_issues(
+        self, issues: list[UnresolvedPolicyField]
+    ) -> list[UnresolvedPolicyField]:
+        """Return the validation issues that must hard-fail startup.
+
+        - ``fail_on_unresolved_fields: true`` makes every issue blocking.
+        - Otherwise, unknown/unavailable condition fields (kind="field") still
+          block when enforcement fails open (``default_action: allow``): a
+          misspelled field silently never matches and the guarded action is
+          allowed — the worst outcome for a governance tool. When enforcement
+          fails closed (``default_action: block``) a non-matching policy still
+          blocks, so these are downgraded to warnings.
+        - Action-shape issues (kind="action") do not fail open (the runtime
+          ignores/logs them), so they only block under the explicit flag.
+        """
+        if self.config.enforcement.fail_on_unresolved_fields:
+            return issues
+        if self.config.enforcement.default_action == DecisionType.ALLOW:
+            return [issue for issue in issues if issue.kind == "field"]
+        return []
 
     def _raise_if_unenforceable(
         self, results: list[PolicyCompileResult]
@@ -242,26 +262,12 @@ class PolicyRuntime:
         self._record_event(event, decision)
         return decision
 
-    def _record_event(self, event: PolicyEvent, decision: PolicyDecision) -> None:
-        if not self.config.enforcement.audit_enabled:
-            return
-        recorded = event.model_copy(
-            update={
-                "decision": decision.decision,
-                "message": decision.message,
-            }
-        )
-        self._audit.log(recorded)
-
-
-class PolicyEngine(PolicyRuntime):
-    """Backward-compatible alias for imperative tool-call checks."""
-
     def check_tool_call(
         self,
         tool_id: str,
         arguments: dict[str, Any] | None = None,
     ) -> PolicyDecision:
+        """Imperative single tool-call check (no decorator required)."""
         event = PolicyEvent(
             event_type=TriggerEvent.BEFORE_TOOL_CALL.value,
             tool_id=tool_id,
@@ -272,6 +278,17 @@ class PolicyEngine(PolicyRuntime):
             ),
         )
         return self.process_event(event, enforce_inventory=True)
+
+    def _record_event(self, event: PolicyEvent, decision: PolicyDecision) -> None:
+        if not self.config.enforcement.audit_enabled:
+            return
+        recorded = event.model_copy(
+            update={
+                "decision": decision.decision,
+                "message": decision.message,
+            }
+        )
+        self._audit.log(recorded)
 
 
 def _parse_trigger_event(event_type: str) -> TriggerEvent | None:

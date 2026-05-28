@@ -103,6 +103,21 @@ class PrivacyRedactor:
             return self._scan_text(value)
         return value
 
+    def redact_result(self, value: Any) -> Any:
+        """Redact an arbitrary tool return value.
+
+        Applies key/schema redaction and (when configured) PII value scanning.
+        Used for after_tool_call REDACT_RESULT decisions. Note this redacts the
+        value returned to the caller; it cannot undo the tool's side effects.
+        """
+        if isinstance(value, dict):
+            return self.redact_dict(value, scan_strings=True)
+        if isinstance(value, list):
+            return [self.redact_result(item) for item in value]
+        if isinstance(value, str):
+            return self._scan_text(value)
+        return value
+
     def _scan_text(self, value: str | None) -> str | None:
         if value is None or self.pii_detector is None:
             return value

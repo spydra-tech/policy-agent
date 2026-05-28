@@ -5,12 +5,10 @@ from typing import Any
 
 from openagentpolicy.policies.schema import (
     ActionType,
-    CompiledPolicy,
     Condition,
     ConditionOperator,
     Policy,
     PolicyAction,
-    PolicyRule,
     TriggerEvent,
 )
 from openagentpolicy.runtime.decisions import DecisionType, PolicyDecision
@@ -18,7 +16,6 @@ from openagentpolicy.runtime.decisions import DecisionType, PolicyDecision
 # Most restrictive first (lower rank = stricter).
 DECISION_PRECEDENCE: tuple[DecisionType, ...] = (
     DecisionType.BLOCK,
-    DecisionType.REDIRECT_TOOL,
     DecisionType.MODIFY_ARGS,
     DecisionType.WARN,
     DecisionType.ESCALATE,
@@ -79,34 +76,6 @@ class PolicyEvaluator:
             update={"matched_policies": [policy.id for policy, _ in matches]}
         )
 
-    def evaluate_legacy(
-        self,
-        tool_id: str,
-        arguments: dict[str, Any],
-        compiled: list[CompiledPolicy],
-    ) -> PolicyDecision:
-        """Evaluate legacy compiled rule lists."""
-        context = {"tool_args": arguments, **arguments}
-        for policy in compiled:
-            for rule in policy.rules:
-                if rule.tool != tool_id:
-                    continue
-                if self._legacy_rule_matches(rule, context):
-                    decision = (
-                        DecisionType.BLOCK
-                        if rule.effect in {"deny", "block"}
-                        else DecisionType.ALLOW
-                    )
-                    return PolicyDecision(
-                        decision=decision,
-                        matched_policies=[policy.id],
-                        message=rule.reason or f"Matched rule {rule.id}",
-                    )
-        return PolicyDecision(
-            decision=DecisionType.ALLOW,
-            message="No matching rule; default allow",
-        )
-
     def _policy_matches(
         self,
         policy: Policy,
@@ -134,8 +103,6 @@ class PolicyEvaluator:
             matched_policies=[policy.id],
             message=action.message,
             modified_args=action.set,
-            target_tool=action.target_tool,
-            target_args=action.args,
         )
 
     def _merge_decisions(
@@ -156,10 +123,6 @@ class PolicyEvaluator:
             message=decision.message
             or next((d.message for _, d in winners if d.message), None),
             modified_args=merged_args,
-            target_tool=decision.target_tool
-            or next((d.target_tool for _, d in winners if d.target_tool), None),
-            target_args=decision.target_args
-            or next((d.target_args for _, d in winners if d.target_args), None),
         )
 
     def _evaluate_condition(self, condition: Condition, ctx: dict[str, Any]) -> bool:
@@ -221,33 +184,6 @@ class PolicyEvaluator:
         if op == ConditionOperator.LTE:
             return actual is not None and expected is not None and actual <= expected
         return False
-
-    def _legacy_rule_matches(
-        self, rule: PolicyRule, context: dict[str, Any]
-    ) -> bool:
-        if not rule.conditions:
-            return True
-        for key, expected in rule.conditions.items():
-            actual = resolve_field(context, key)
-            if isinstance(expected, dict):
-                if not self._match_legacy_operator(actual, expected):
-                    return False
-            elif actual != expected:
-                return False
-        return True
-
-    def _match_legacy_operator(self, actual: Any, spec: dict[str, Any]) -> bool:
-        if "gt" in spec and not (actual is not None and actual > spec["gt"]):
-            return False
-        if "gte" in spec and not (actual is not None and actual >= spec["gte"]):
-            return False
-        if "lt" in spec and not (actual is not None and actual < spec["lt"]):
-            return False
-        if "lte" in spec and not (actual is not None and actual <= spec["lte"]):
-            return False
-        if "eq" in spec and actual != spec["eq"]:
-            return False
-        return True
 
 
 def resolve_field(context: dict[str, Any], field: str) -> Any:
