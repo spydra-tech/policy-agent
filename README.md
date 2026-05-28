@@ -178,6 +178,62 @@ enforcement:
   default_action: allow
   on_policy_error: allow_with_warning
   audit_enabled: true
+
+privacy:
+  redact_keys: [password, token, secret, pan, aadhaar, ssn]
+  pii_detection:
+    enabled: false          # opt-in; off by default
+    engine: regex           # regex | presidio
+    languages: [en]
+    entities: [CREDIT_CARD, EMAIL_ADDRESS, PHONE_NUMBER, IN_PAN, IN_AADHAAR, US_SSN]
+    scan_fields: [final_response, tool_result, tool_args]
+```
+
+## Privacy and PII Redaction
+
+Redaction runs in two complementary layers before anything is written to audit
+logs or traces:
+
+1. **Key/schema redaction (always on, deterministic).**
+   - Any field whose name matches `privacy.redact_keys` is masked.
+   - Any tool argument flagged `sensitive: true` in inventory is masked.
+   - This layer never inspects values, so it is fast and predictable.
+
+2. **Value-level PII detection (optional, opt-in).**
+   - Scans free-text values (e.g. `final_response`, string args/results) for PII
+     that is not captured by key names.
+   - Controlled by `privacy.pii_detection`.
+
+### Engines
+
+- `engine: regex` (default when enabled): deterministic, local, dependency-free.
+  Uses regex plus checksum validation — Luhn for credit cards, Verhoeff for
+  Aadhaar — to keep false positives low. Recommended for production because it is
+  reproducible and needs no model calls.
+- `engine: presidio`: value-level NER + recognizers via Microsoft Presidio. Best
+  when you need broad free-text PII (names, addresses, locations). Requires the
+  optional dependency:
+
+```bash
+pip install openagentpolicy[pii]
+```
+
+Presidio is imported lazily, so the core runtime stays dependency-free. Because
+its NER recognizers are model-dependent, prefer `regex` when you only need
+structured identifiers (PAN, Aadhaar, SSN, cards).
+
+`scan_fields` controls which event fields are scanned for PII values. Key/schema
+redaction always applies regardless of `scan_fields`.
+
+### Programmatic use
+
+```python
+from openagentpolicy.pii import RegexPiiDetector, redact_spans
+
+detector = RegexPiiDetector.from_entities(["EMAIL_ADDRESS", "IN_PAN"])
+text = "Mail john@example.com, PAN ABCDE1234F"
+spans = detector.detect(text)
+safe = redact_spans(text, spans)
 ```
 
 ## Inventory: File and API Examples

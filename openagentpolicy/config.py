@@ -68,6 +68,31 @@ class TracesConfig(BaseModel):
     store: TraceStoreConfig = Field(default_factory=TraceStoreConfig)
 
 
+class PiiDetectionConfig(BaseModel):
+    """Optional value-level PII detection (off by default).
+
+    Key/schema redaction always runs. This adds content scanning of free-text
+    values (e.g. final_response) for PII that is not captured by key names.
+    """
+
+    enabled: bool = False
+    engine: str = "regex"
+    languages: list[str] = Field(default_factory=lambda: ["en"])
+    entities: list[str] = Field(
+        default_factory=lambda: [
+            "CREDIT_CARD",
+            "EMAIL_ADDRESS",
+            "PHONE_NUMBER",
+            "IN_PAN",
+            "IN_AADHAAR",
+            "US_SSN",
+        ]
+    )
+    scan_fields: list[str] = Field(
+        default_factory=lambda: ["final_response", "tool_result", "tool_args"]
+    )
+
+
 class PrivacyConfig(BaseModel):
     redact_keys: list[str] = Field(
         default_factory=lambda: [
@@ -79,6 +104,7 @@ class PrivacyConfig(BaseModel):
             "ssn",
         ]
     )
+    pii_detection: PiiDetectionConfig = Field(default_factory=PiiDetectionConfig)
 
 
 class EngineConfig(BaseModel):

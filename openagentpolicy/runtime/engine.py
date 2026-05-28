@@ -8,6 +8,7 @@ from openagentpolicy.audit.logger import AuditLogger
 from openagentpolicy.config import EngineConfig, OnPolicyError, config_base_path, load_config
 from openagentpolicy.inventory.resolver import InventoryResolver
 from openagentpolicy.inventory.schema import Inventory
+from openagentpolicy.pii import create_pii_detector
 from openagentpolicy.privacy import PrivacyRedactor
 from openagentpolicy.policies.providers import PolicyProvider
 from openagentpolicy.policies.schema import (
@@ -89,8 +90,18 @@ class PolicyRuntime:
         self._load_errors = []
         self._inventory = self._load_inventory()
         self._inventory_resolver._cached = self._inventory
+        pii_config = self.config.privacy.pii_detection
+        pii_detector = create_pii_detector(
+            enabled=pii_config.enabled,
+            engine=pii_config.engine,
+            entities=pii_config.entities,
+            languages=pii_config.languages,
+        )
         self._redactor = PrivacyRedactor.from_config(
-            self._inventory, self.config.privacy.redact_keys
+            self._inventory,
+            self.config.privacy.redact_keys,
+            pii_detector=pii_detector,
+            scan_fields=pii_config.scan_fields,
         )
         self._audit = AuditLogger(self.config.audit_log, redactor=self._redactor)
         self._trace_recorder = create_trace_recorder(
