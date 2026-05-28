@@ -247,6 +247,68 @@ from openagentpolicy import get_runtime
 get_runtime().reload()
 ```
 
+## English Policy Compiler Modes (Rule-Based, AI, Hybrid)
+
+English policies can now be compiled using three strategies:
+
+- `rule_based` (default): deterministic regex + inventory phrase matching
+- `ai`: AI-only conversion to structured policy (still schema/inventory validated)
+- `hybrid`: AI first, then deterministic fallback when AI output is uncertain/invalid
+
+### Config
+
+```yaml
+policies:
+  provider: directory
+  path: ./policies
+  support_english: true
+  english_compiler: hybrid        # rule_based | ai | hybrid
+  ai:
+    model: gpt-4.1-mini
+    api_key_env: OPENAI_API_KEY
+    base_url: null                # optional custom endpoint
+    require_review_below_confidence: 0.85
+```
+
+### Mode behavior
+
+- `rule_based`
+  - Uses deterministic parsing from `openagentpolicy/policies/compiler.py`
+  - Best for controlled policy templates and strict reproducibility
+
+- `ai`
+  - Uses an LLM translator to generate structured policy JSON
+  - Validates generated policy with schema + inventory alignment checks
+  - Returns:
+    - `compiled` when valid and confidence >= threshold
+    - `needs_review` when confidence is low or output shape is invalid
+    - `not_enforceable` when policy references unknown tools/fields
+
+- `hybrid`
+  - Tries AI first
+  - If AI does not produce `compiled`, runs rule-based compiler
+  - Uses deterministic output when fallback succeeds
+
+### Runtime requirements for AI mode
+
+- Install OpenAI SDK in your environment (`pip install openai`)
+- Set API key in env variable configured by `policies.ai.api_key_env` (default `OPENAI_API_KEY`)
+- Keep `support_english: true`
+
+If AI is unavailable (no key/dependency/response), AI mode returns `needs_review`; hybrid mode will attempt deterministic fallback automatically.
+
+### Safety model
+
+Even in AI mode, generated policy is never enforced blindly:
+
+1. Parse model output as JSON
+2. Validate against `Policy` schema
+3. Validate `tool_id` and condition field paths against inventory
+4. Apply confidence threshold
+5. Enforce only `compiled` policies
+
+This keeps natural-language flexibility while preserving enforcement safety.
+
 ## Policy Ladder: Simple to Complex
 
 ### 1) Simple tool threshold (structured)

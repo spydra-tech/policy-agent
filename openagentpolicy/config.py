@@ -34,6 +34,8 @@ class PoliciesConfig(BaseModel):
     url: str | None = None
     support_english: bool = True
     compile_on_startup: bool = True
+    english_compiler: str = "rule_based"
+    ai: dict[str, Any] = Field(default_factory=dict)
 
 
 class OnPolicyError(str, Enum):

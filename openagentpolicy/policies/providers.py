@@ -11,6 +11,7 @@ import yaml
 from openagentpolicy.config import PoliciesConfig, resolve_config_path
 from openagentpolicy.inventory.schema import Inventory
 from openagentpolicy.policies.compiler import PolicyCompiler
+from openagentpolicy.policies.english_compilers import create_english_compiler
 from openagentpolicy.policies.schema import (
     CompileStatus,
     Policy,
@@ -165,6 +166,11 @@ class PolicyProvider:
         self._source = create_policy_source_provider(config, base_path)
         self._inventory = inventory or Inventory()
         self._compiler = PolicyCompiler(self._inventory)
+        self._english_compiler = create_english_compiler(
+            mode=config.english_compiler,
+            inventory=self._inventory,
+            ai_config=config.ai,
+        )
         self._last_compile_results: list[PolicyCompileResult] = []
 
     @property
@@ -193,7 +199,7 @@ class PolicyProvider:
                         document.id,
                     )
                     continue
-                result = self._compiler.compile_document(document)
+                result = self._english_compiler.compile_document(document)
                 results.append(result)
                 self._log_compile_result(result)
                 if (
