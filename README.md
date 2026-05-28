@@ -6,6 +6,61 @@ See:
 - [examples/loan_approval_basic](examples/loan_approval_basic/) for a minimal tool-only sample.
 - [examples/agentic_loan_desk](examples/agentic_loan_desk/) for English-to-structured compilation, tool-level and agent-level enforcement, and response policies.
 
+## Why This Is Needed
+
+Agentic applications usually fail in predictable ways:
+- A tool is called with valid syntax but risky business intent (for example, approving a high-value loan in auto mode).
+- Different agents share the same tool, but not the same permissions.
+- The final user message contains risky claims ("guaranteed approval"), even when tool usage was compliant.
+- Rules exist in docs/confluence but are not enforced uniformly in runtime code.
+
+`openagentpolicy` solves this by making policy checks part of execution, not just guidance:
+- Tool guardrails enforce constraints at `before_tool_call` / `after_tool_call`.
+- Agent context (`agent_id`, `metadata`) supports role- and workflow-based controls.
+- Final response checks enforce communication policy before user-visible output.
+- English policy authoring can be compiled to structured enforceable rules.
+
+### Practical value examples
+
+#### Example A: Prevent a costly automation mistake
+
+Without policy:
+- Agent calls `approve_loan(approved_amount=7500, approval_mode="auto")`
+- Tool succeeds
+- Business rule violated
+
+With policy:
+- Policy blocks `approved_amount > 5000` when mode is `auto`
+- Runtime raises `PolicyViolation`
+- Agent must escalate to review flow
+
+#### Example B: Shared tools, role-specific control
+
+Without policy:
+- `compliance-agent` and `loan-agent` both can call `approve_loan`
+- Access control must be reimplemented in each orchestrator path
+
+With policy:
+- One policy states only `loan-agent` may approve
+- Any non-allowed agent is blocked consistently across frameworks
+
+#### Example C: Safe communication after successful tools
+
+Without response policy:
+- Tool calls are compliant, but final answer says "guaranteed approval"
+- Regulatory or trust risk at user boundary
+
+With response policy:
+- `before_final_response` catches banned language
+- App returns safe fallback text or revised response
+
+### Business and engineering benefits
+
+- Fewer duplicated guardrail checks across services and frameworks
+- Faster policy updates (file or API source + runtime reload)
+- Better auditability (policy decisions appear in traces/audit logs)
+- Safer multi-agent scaling because controls are centralized
+
 ## Quickstart
 
 ```bash
