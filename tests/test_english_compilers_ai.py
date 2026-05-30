@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from openagentpolicy.inventory.schema import ArgumentSchema, Inventory, Tool
+from openagentpolicy.inventory.schema import Agent, ArgumentSchema, Inventory, Tool
 from openagentpolicy.policies.english_compilers import (
     AIEnglishCompiler,
     HybridEnglishCompiler,
@@ -35,6 +35,12 @@ def _inventory() -> Inventory:
             )
         ]
     )
+
+
+def _inventory_with_agent() -> Inventory:
+    inv = _inventory()
+    inv.agents = [Agent(id="loan-agent", name="Loan Agent")]
+    return inv
 
 
 def test_ai_compiler_compiles_when_deterministic_compiler_agrees() -> None:
@@ -74,6 +80,78 @@ def test_ai_compiler_compiles_when_deterministic_compiler_agrees() -> None:
     assert result.compiled_policy is not None
     assert result.compiled_policy.trigger is not None
     assert result.compiled_policy.trigger.tool_id == "approve_loan"
+
+
+def test_ai_compiler_accepts_top_level_policy_object() -> None:
+    # Some models emit the policy fields at the top level instead of nesting
+    # them under a "policy" key. The compiler must accept both envelopes.
+    document = PolicyDocument(
+        id="p1",
+        policy_type=PolicyType.ENGLISH,
+        english="If approved amount is greater than 5000, auto approval is not allowed.",
+    )
+    translator = _FakeTranslator(
+        {
+            "id": "p1",
+            "policy_type": "structured",
+            "trigger": {"event": "before_tool_call", "tool_id": "approve_loan"},
+            "conditions": {
+                "all": [
+                    {
+                        "field": "tool_args.approved_amount",
+                        "operator": ">",
+                        "value": 5000,
+                    },
+                    {
+                        "field": "tool_args.approval_mode",
+                        "operator": "==",
+                        "value": "auto",
+                    },
+                ]
+            },
+            "action": {"type": "block", "message": "Too high"},
+        }
+    )
+    compiler = AIEnglishCompiler(_inventory(), translator=translator)
+    result = compiler.compile_document(document)
+    assert result.compile_status == CompileStatus.COMPILED
+    assert result.compiled_policy is not None
+    assert result.compiled_policy.trigger.tool_id == "approve_loan"
+
+
+def test_ai_compiled_policy_id_is_pinned_to_source_document() -> None:
+    # The LLM emits a different id/name; the enforced policy must keep the
+    # source document's identity for traceability.
+    document = PolicyDocument(
+        id="agent_only_loan_agent_english",
+        name="Only Loan Agent May Approve (English)",
+        policy_type=PolicyType.ENGLISH,
+        english="Only loan-agent may call approve loan.",
+    )
+    translator = _FakeTranslator(
+        {
+            "policy": {
+                "id": "agent_only_loan_agent",
+                "name": "LLM picked name",
+                "policy_type": "structured",
+                "trigger": {"event": "before_tool_call", "tool_id": "approve_loan"},
+                "conditions": {
+                    "field": "agent_id",
+                    "operator": "!=",
+                    "value": "loan-agent",
+                },
+                "action": {"type": "block"},
+            }
+        }
+    )
+    compiler = AIEnglishCompiler(
+        _inventory_with_agent(), translator=translator
+    )
+    result = compiler.compile_document(document)
+    assert result.compile_status == CompileStatus.COMPILED
+    assert result.compiled_policy is not None
+    assert result.compiled_policy.id == "agent_only_loan_agent_english"
+    assert result.compiled_policy.name == "Only Loan Agent May Approve (English)"
 
 
 def test_self_reported_confidence_is_not_the_gate() -> None:

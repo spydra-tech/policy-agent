@@ -1,0 +1,6 @@
+id: block_large_order_english
+name: Block Large Equity Orders (English)
+enabled: true
+policy_type: english
+english: >
+  If order quantity is greater than 100, the trade is not allowed.

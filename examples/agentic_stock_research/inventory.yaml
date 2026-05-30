@@ -1,0 +1,83 @@
+application:
+  id: agentic-stock-research
+  name: Agentic Stock Research Desk
+  environment: demo
+
+agents:
+  - id: research-agent
+    name: Research Agent
+    description: Gathers quotes and news; must not execute trades
+    framework: langgraph
+  - id: trading-desk-agent
+    name: Trading Desk Agent
+    description: May submit trade orders after compliance clearance
+    framework: langgraph
+  - id: retail-copilot-agent
+    name: Retail Copilot
+    description: End-user assistant; read-only market data
+
+tools:
+  - id: get_stock_quote
+    name: Get Stock Quote
+    description: Fetch a delayed quote for a ticker symbol
+    side_effect: false
+    risk_level: low
+    arguments:
+      symbol:
+        type: string
+        description: Ticker symbol
+        aliases:
+          - ticker
+          - stock symbol
+
+  - id: search_financial_news
+    name: Search Financial News
+    description: Search recent headlines for a company or theme
+    side_effect: false
+    risk_level: low
+    arguments:
+      query:
+        type: string
+        description: Search query
+        aliases:
+          - news query
+
+  - id: save_research_note
+    name: Save Research Note
+    description: Persist an internal research note for a symbol
+    side_effect: true
+    risk_level: medium
+    arguments:
+      symbol:
+        type: string
+      note:
+        type: string
+        description: Analyst note body
+      conviction:
+        type: string
+        description: Conviction label
+        allowed_values:
+          - low
+          - medium
+          - high
+
+  - id: place_trade_order
+    name: Place Trade Order
+    description: Submit a buy or sell order to the broker
+    side_effect: true
+    risk_level: high
+    arguments:
+      symbol:
+        type: string
+      quantity:
+        type: number
+        description: Number of shares
+        aliases:
+          - order quantity
+          - shares
+      side:
+        type: string
+        description: Order side
+        allowed_values:
+          - buy
+          - sell

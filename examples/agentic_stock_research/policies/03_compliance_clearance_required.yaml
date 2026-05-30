@@ -1,0 +1,14 @@
+id: compliance_clearance_required
+name: Compliance Clearance Required Before Trading
+enabled: true
+policy_type: structured
+trigger:
+  event: before_tool_call
+  tool_id: place_trade_order
+conditions:
+  field: metadata.compliance_cleared
+  operator: "!="
+  value: true
+action:
+  type: block
+  message: Trade requires compliance_cleared=true in session metadata.

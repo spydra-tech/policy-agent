@@ -1,6 +1,6 @@
 # Agentic loan desk example
 
-End-to-end demo of **English policies compiled and enforced** at both **tool** and **agent** scope. No LLM is required — scenarios are scripted in `demo.py`.
+End-to-end demo of **English policies compiled and enforced** at both **tool** and **agent** scope. Scenarios are scripted in `demo.py` and need no LLM (rule-based compiler); `ai_demo.py` runs the same flow through the AI compiler.
 
 For a minimal tool-only introduction, see [loan_approval_basic](../loan_approval_basic/).
 
@@ -47,6 +47,33 @@ You should see:
 2. **Scenarios A–E** — labeled `ALLOWED` / `BLOCKED` with policy messages  
 3. **Traces** — `openagentpolicy_traces/events.jsonl` audit log  
 
+## Run the demo with the AI compiler
+
+`demo.py` uses the deterministic rule-based compiler (no network). To compile the
+English policies with an LLM instead, use `ai_demo.py` + `openagentpolicy.ai.yaml`
+(which sets `policies.english_compiler: ai`):
+
+```bash
+pip install openai
+export OPENAI_API_KEY=sk-...
+cd examples/agentic_loan_desk
+python ai_demo.py
+```
+
+The LLM only runs at runtime load (`configure()`), and AI output is enforced
+**only when the rule-based compiler independently produces an equivalent policy**
+(deterministic corroboration). Without a key (or when the AI output is not
+corroborated), the affected English policies become `needs_review` and are **not
+enforced** — `ai_demo.py` prints exactly which policies were loaded so this is
+visible. To inspect the runtime's compiled set directly:
+
+```bash
+openagentpolicy explain --config openagentpolicy.ai.yaml --format json
+```
+
+> Note: the CLI `compile-policy` / `compile-english` commands always use the
+> rule-based compiler; the `ai` mode path is exercised through runtime load only.
+
 ## How agents are modeled
 
 `agent_session.py` wraps `openagentpolicy.agent_session` so each tool call carries:
@@ -89,8 +116,10 @@ flowchart TB
 | File | Purpose |
 |------|---------|
 | `openagentpolicy.yaml` | Runtime config, policy directory, traces |
+| `openagentpolicy.ai.yaml` | Same config with `english_compiler: ai` for `ai_demo.py` |
 | `inventory.yaml` | Agents, tools, argument aliases for the compiler |
 | `policies/` | Tiered policies (English + structured) |
 | `tools.py` | `@policy_tool` definitions |
 | `agent_session.py` | Agent context helpers |
-| `demo.py` | Scripted scenarios |
+| `demo.py` | Scripted scenarios (rule-based compiler) |
+| `ai_demo.py` | Scripted scenarios using the AI compiler (`openagentpolicy.ai.yaml`) |

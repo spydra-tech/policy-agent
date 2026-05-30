@@ -37,6 +37,76 @@ class AITranslator(Protocol):
     ) -> dict[str, Any] | None: ...
 
 
+# Operator symbols accepted by the Condition schema (must match
+# ConditionOperator in policies/schema.py).
+_CONDITION_OPERATORS = [
+    "==", "!=", ">", ">=", "<", "<=",
+    "in", "not_in", "contains", "regex", "exists", "not_exists",
+]
+
+# JSON Schema describing a single structured Policy. Used as the OpenAI
+# Responses structured-output format so the model is constrained to the exact
+# shape rather than guessing operator names or condition envelopes. Pydantic
+# validation + deterministic corroboration remain the authoritative gates; this
+# just narrows the model's output space up front.
+_CONDITION_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "description": "Leaf {field,operator,value} OR group {all|any|not}.",
+    "properties": {
+        "field": {"type": ["string", "null"]},
+        "operator": {"type": ["string", "null"], "enum": [*_CONDITION_OPERATORS, None]},
+        "value": {"type": ["string", "number", "integer", "boolean", "array", "null"]},
+        "case_sensitive": {"type": "boolean"},
+        "all": {"type": ["array", "null"], "items": {"$ref": "#/$defs/condition"}},
+        "any": {"type": ["array", "null"], "items": {"$ref": "#/$defs/condition"}},
+        "not": {"anyOf": [{"$ref": "#/$defs/condition"}, {"type": "null"}]},
+    },
+}
+
+_POLICY_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string"},
+        "name": {"type": ["string", "null"]},
+        "enabled": {"type": "boolean"},
+        "policy_type": {"type": "string", "enum": ["structured"]},
+        "trigger": {
+            "type": "object",
+            "properties": {
+                "event": {
+                    "type": "string",
+                    "enum": [
+                        "before_tool_call",
+                        "after_tool_call",
+                        "before_final_response",
+                    ],
+                },
+                "tool_id": {"type": ["string", "null"]},
+                "agent_id": {"type": ["string", "null"]},
+            },
+            "required": ["event"],
+        },
+        "conditions": {"$ref": "#/$defs/condition"},
+        "action": {
+            "type": "object",
+            "properties": {
+                "type": {
+                    "type": "string",
+                    "enum": [
+                        "allow", "block", "warn", "log_only",
+                        "redact_result", "escalate", "modify_args",
+                    ],
+                },
+                "message": {"type": ["string", "null"]},
+            },
+            "required": ["type"],
+        },
+    },
+    "required": ["id", "policy_type", "trigger", "conditions", "action"],
+    "$defs": {"condition": _CONDITION_JSON_SCHEMA},
+}
+
+
 @dataclass
 class OpenAITranslator:
     model: str = "gpt-4.1-mini"
@@ -60,41 +130,119 @@ class OpenAITranslator:
         client = OpenAI(api_key=api_key, base_url=self.base_url)
         inventory_payload = inventory.model_dump(mode="json")
         prompt = {
-            "task": "Convert English policy into structured policy JSON",
+            "task": "Convert an English policy into ONE structured policy JSON object",
             "requirements": [
-                "Return ONLY valid JSON object",
-                "Use known tool_id and fields from inventory",
-                "Use policy schema fields: id,name,enabled,policy_type,trigger,conditions,action",
-                "Set policy_type=structured",
+                "Return ONLY a valid JSON object, with no prose or markdown fences",
+                "Set policy_type to 'structured'",
+                "Use only tool ids and argument/field names present in the inventory",
+                "Top-level keys: id, name, enabled, policy_type, trigger, conditions, action",
+            ],
+            "trigger_schema": {
+                "event": "before_tool_call | after_tool_call | before_final_response",
+                "tool_id": "tool id from inventory; omit for before_final_response",
+                "agent_id": "optional; usually leave unset (scope by a condition instead)",
+            },
+            "condition_schema": {
+                "leaf": {
+                    "field": (
+                        "dotted path: tool_args.<arg>, metadata.<key>, agent_id, "
+                        "final_response, tool.risk_level, tool.side_effect"
+                    ),
+                    "operator": "EXACT symbol from the operators list below",
+                    "value": "comparison value (omit for exists/not_exists)",
+                },
+                "group": 'combine leaves with {"all": [...]}, {"any": [...]}, or {"not": {...}}',
+            },
+            "operators": [
+                "==", "!=", ">", ">=", "<", "<=",
+                "in", "not_in", "contains", "regex", "exists", "not_exists",
+            ],
+            "operator_notes": [
+                "Use the SYMBOL, never a word: 'greater than' -> '>', 'at least' -> '>=', "
+                "'equals'/'is' -> '==', 'not equal'/'is not' -> '!=', 'below' -> '<'",
+                "exists / not_exists take no value",
+            ],
+            "action_schema": {
+                "type": "allow | block | warn | log_only | redact_result | escalate | modify_args",
+                "message": "optional human-readable message",
+            },
+            "guidance": [
+                "If policy_document.hints.action is present, use it as the action.",
+                "Restrict a tool to one agent ('only X may call/use <tool>') with a leaf "
+                "condition {field:'agent_id', operator:'!=', value:'X'} and action block — "
+                "NOT trigger.agent_id and NOT a bare {agent_id: X} object.",
+                "Combine multiple numeric/text constraints under 'all'.",
+            ],
+            "examples": [
+                {
+                    "english": "If approved amount is greater than 5000 and approval mode is auto, auto approval is not allowed.",
+                    "policy": {
+                        "id": "example_threshold",
+                        "policy_type": "structured",
+                        "trigger": {"event": "before_tool_call", "tool_id": "approve_loan"},
+                        "conditions": {
+                            "all": [
+                                {"field": "tool_args.approved_amount", "operator": ">", "value": 5000},
+                                {"field": "tool_args.approval_mode", "operator": "==", "value": "auto"},
+                            ]
+                        },
+                        "action": {"type": "block", "message": "Auto approval is not allowed above 5000."},
+                    },
+                },
+                {
+                    "english": "Only loan-agent may call approve loan.",
+                    "policy": {
+                        "id": "example_agent_only",
+                        "policy_type": "structured",
+                        "trigger": {"event": "before_tool_call", "tool_id": "approve_loan"},
+                        "conditions": {"field": "agent_id", "operator": "!=", "value": "loan-agent"},
+                        "action": {"type": "block", "message": "Only loan-agent may approve loans."},
+                    },
+                },
             ],
             "inventory": inventory_payload,
             "policy_document": document.model_dump(mode="json"),
-            "expected_output": {
-                "policy": {
-                    "id": "string",
-                    "name": "string|optional",
-                    "enabled": True,
-                    "policy_type": "structured",
-                    "trigger": {"event": "before_tool_call", "tool_id": "string|optional"},
-                    "conditions": {},
-                    "action": {"type": "allow|block|warn|log_only|modify_args|redact_result|escalate"},
-                },
-                "message": "optional string",
-                "missing_fields": [],
-            },
+            "output_format": (
+                "Return ONLY the structured policy JSON object itself (top-level "
+                "keys id, name, enabled, policy_type, trigger, conditions, action)."
+            ),
         }
-        response = client.responses.create(
-            model=self.model,
-            temperature=0,
-            input=[{"role": "user", "content": json.dumps(prompt)}],
-        )
-        text = response.output_text.strip()
+        text = self._create(client, json.dumps(prompt))
         if not text:
             return None
         try:
             return json.loads(text)
         except json.JSONDecodeError:
             return None
+
+    def _create(self, client: Any, content: str) -> str | None:
+        """Call the Responses API, constraining output to the policy schema.
+
+        Falls back to an unconstrained call if the SDK/endpoint rejects the
+        structured-output ``text.format`` argument, so older deployments still
+        work (the prompt itself also describes the schema).
+        """
+        request: dict[str, Any] = {
+            "model": self.model,
+            "temperature": 0,
+            "input": [{"role": "user", "content": content}],
+        }
+        try:
+            response = client.responses.create(
+                **request,
+                text={
+                    "format": {
+                        "type": "json_schema",
+                        "name": "structured_policy",
+                        "schema": _POLICY_JSON_SCHEMA,
+                        "strict": False,
+                    }
+                },
+            )
+        except Exception:
+            response = client.responses.create(**request)
+        text = getattr(response, "output_text", "") or ""
+        return text.strip() or None
 
 
 class AIEnglishCompiler:
@@ -130,8 +278,8 @@ class AIEnglishCompiler:
                 confidence=0.0,
                 message="AI compiler unavailable or returned empty output",
             )
-        policy_obj = payload.get("policy")
-        if not isinstance(policy_obj, dict):
+        policy_obj = _extract_policy_object(payload)
+        if policy_obj is None:
             return PolicyCompileResult(
                 policy_id=document.id,
                 compile_status=CompileStatus.NEEDS_REVIEW,
@@ -157,7 +305,16 @@ class AIEnglishCompiler:
                 missing_fields=payload.get("missing_fields") or [],
             )
 
-        structured = policy.model_copy(update={"policy_type": PolicyType.STRUCTURED})
+        # Pin identity to the source document. The LLM's chosen id/name are not
+        # authoritative; the enforced policy must remain traceable to the file it
+        # came from (audit logs and matched_policies reference this id).
+        structured = policy.model_copy(
+            update={
+                "policy_type": PolicyType.STRUCTURED,
+                "id": document.id,
+                "name": document.name or policy.name,
+            }
+        )
         missing_fields = payload.get("missing_fields") or []
 
         # Grounded corroboration: does the deterministic compiler independently
@@ -248,6 +405,23 @@ def create_english_compiler(
     if normalized == "hybrid":
         return HybridEnglishCompiler(primary=ai_compiler, fallback=rule_based)
     return rule_based
+
+
+def _extract_policy_object(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Pull the policy object out of a translator payload.
+
+    Models inconsistently either wrap the policy under a ``policy`` key or emit
+    the policy fields at the top level. Accept both rather than rejecting a
+    structurally valid policy over its envelope.
+    """
+    candidate = payload.get("policy")
+    if isinstance(candidate, dict):
+        return candidate
+    # Top-level policy: detect by its identifying keys. Extra keys like
+    # "message"/"missing_fields" are ignored by Policy validation.
+    if any(key in payload for key in ("trigger", "conditions", "action")):
+        return payload
+    return None
 
 
 def _validate_inventory_alignment(policy: Policy, inventory: Inventory) -> str | None:

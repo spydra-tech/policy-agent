@@ -1,0 +1,5 @@
+id: retail_no_save_note_english
+name: Retail Copilot Cannot Persist Research Notes (English)
+enabled: true
+policy_type: english
+english: Only research-agent may call save research note.

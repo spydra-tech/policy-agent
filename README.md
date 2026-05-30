@@ -5,6 +5,7 @@ Policy enforcement runtime for AI and agentic applications. Add `@policy_tool` t
 See:
 - [examples/loan_approval_basic](examples/loan_approval_basic/) for a minimal tool-only sample.
 - [examples/agentic_loan_desk](examples/agentic_loan_desk/) for English-to-structured compilation, tool-level and agent-level enforcement, and response policies.
+- [examples/agentic_stock_research](examples/agentic_stock_research/) for a **LangGraph** stock-research workflow with English trade/research policies.
 
 ## Why This Is Needed
 
@@ -135,6 +136,56 @@ configure("openagentpolicy.yaml")
 def approve_loan(application_id: str, approved_amount: float):
     return {"status": "approved", "application_id": application_id}
 ```
+
+## Run the Example Demo
+
+The `examples/agentic_loan_desk` example shows English policies compiled and
+enforced at both tool and agent scope.
+
+1. Install the package from the repo root:
+
+```bash
+pip install -e ".[dev]"
+```
+
+2. Run the scripted demo (no LLM required — uses the rule-based compiler):
+
+```bash
+cd examples/agentic_loan_desk
+python demo.py
+```
+
+You'll see five phases: English-policy compilation, tool threshold enforcement
+(`$4k` allowed / `$7k` blocked), agent allowlist (`compliance-agent` blocked),
+the human-review workflow gate, and the final-response guard. An audit trail is
+written to `openagentpolicy_traces/events.jsonl`.
+
+3. (Optional) Run the same flow through the AI compiler:
+
+```bash
+pip install openai
+export OPENAI_API_KEY=sk-...
+cd examples/agentic_loan_desk
+python ai_demo.py
+```
+
+This uses `openagentpolicy.ai.yaml` (`english_compiler: ai`). The LLM runs only
+at load time, and its output is enforced only when the rule-based compiler
+independently agrees (corroboration). Without a key the English policies show as
+`needs_review` and are not enforced; `ai_demo.py` prints which policies loaded.
+
+4. (Optional) Inspect compilation without running scenarios:
+
+```bash
+cd examples/agentic_loan_desk
+openagentpolicy compile-policy policies/01_tool_high_value_english.yaml --inventory inventory.yaml
+openagentpolicy explain --config openagentpolicy.yaml --format json
+```
+
+> Run the scripts from inside `examples/agentic_loan_desk/`: the configs use
+> relative paths resolved against the config file, and the scripts import the
+> local `tools.py` / `agent_session.py`. For a smaller, tool-only starting point
+> see `examples/loan_approval_basic/`.
 
 ## How It Fits Agent Frameworks
 
@@ -505,6 +556,13 @@ policies:
 - Install OpenAI SDK in your environment (`pip install openai`)
 - Set API key in env variable configured by `policies.ai.api_key_env` (default `OPENAI_API_KEY`)
 - Keep `support_english: true`
+
+The translator constrains the model with the OpenAI Responses structured-output
+(`json_schema`) format so it must emit the exact `Policy` shape — valid operator
+symbols, leaf/group conditions — instead of free-form JSON. If the SDK/endpoint
+rejects that argument, it falls back to an unconstrained call (the prompt also
+describes the schema). The compiled policy's `id`/`name` are always pinned to the
+source document, not the model's output, so enforced policies stay traceable.
 
 If AI is unavailable (no key/dependency/response), AI mode returns `needs_review`; hybrid mode will attempt deterministic fallback automatically.
 

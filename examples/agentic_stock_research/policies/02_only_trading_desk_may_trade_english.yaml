@@ -1,0 +1,5 @@
+id: only_trading_desk_may_trade_english
+name: Only Trading Desk May Place Orders (English)
+enabled: true
+policy_type: english
+english: Only trading-desk-agent may call place trade order.

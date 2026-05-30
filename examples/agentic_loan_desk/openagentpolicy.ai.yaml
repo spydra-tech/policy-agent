@@ -1,6 +1,6 @@
 application:
   id: agentic-loan-desk
-  name: Agentic Loan Desk
+  name: Agentic Loan Desk (AI compiler)
   environment: demo
 
 runtime:
@@ -18,6 +18,16 @@ policies:
   path: ./policies
   support_english: true
   compile_on_startup: true
+  # Force the LLM translator. AI output is only auto-compiled when the
+  # deterministic rule-based compiler independently agrees; otherwise it is
+  # surfaced as needs_review and not enforced.
+  english_compiler: ai
+  ai:
+    model: gpt-4.1-mini
+    api_key_env: OPENAI_API_KEY
+
+compiler:
+  enabled: true
 
 traces:
   enabled: true

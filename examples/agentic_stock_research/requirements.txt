@@ -1,0 +1,3 @@
+# Example-only dependencies (install in addition to openagentpolicy)
+langgraph>=0.2.0
+langchain-core>=0.3.0

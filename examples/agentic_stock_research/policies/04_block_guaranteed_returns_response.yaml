@@ -1,0 +1,13 @@
+id: block_guaranteed_returns_response
+name: Block Guaranteed-Return Claims in Agent Output
+enabled: true
+policy_type: structured
+trigger:
+  event: before_final_response
+conditions:
+  field: final_response
+  operator: contains
+  value: guaranteed returns
+action:
+  type: block
+  message: Agents must not promise guaranteed investment returns.

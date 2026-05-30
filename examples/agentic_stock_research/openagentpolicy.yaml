@@ -1,16 +1,14 @@
 application:
-  id: agentic-loan-desk
-  name: Agentic Loan Desk
+  id: agentic-stock-research
+  name: Agentic Stock Research
   environment: demo
 
 runtime:
-  default_agent_id: loan-agent
+  default_agent_id: research-agent
 
 inventory:
   provider: file
   path: ./inventory.yaml
-  # Tools are declared both here and via @policy_tool; trust the static file and
-  # ignore annotation-derived overrides (silences merge-conflict warnings).
   conflict_strategy: prefer_static
 
 policies:
@@ -18,6 +16,7 @@ policies:
   path: ./policies
   support_english: true
   compile_on_startup: true
+  english_compiler: hybrid
 
 traces:
   enabled: true
