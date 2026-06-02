@@ -1,0 +1,5 @@
+id: only_adjuster_may_intake_english
+name: Only Claims Adjuster May Record Intake (English)
+enabled: true
+policy_type: english
+english: Only claims-adjuster-agent may call record claim intake.

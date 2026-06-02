@@ -1,66 +1,153 @@
 # openagentpolicy
 
-Policy enforcement runtime for AI and agentic applications. Add `@policy_tool` to tool functions, load inventory/policies from files or HTTP services, and enforce rules at runtime for tool calls and final responses.
+Policy enforcement runtime for AI and agentic applications.
 
-See:
-- [examples/loan_approval_basic](examples/loan_approval_basic/) for a minimal tool-only sample.
-- [examples/agentic_loan_desk](examples/agentic_loan_desk/) for English-to-structured compilation, tool-level and agent-level enforcement, and response policies.
-- [examples/agentic_stock_research](examples/agentic_stock_research/) for a **LangGraph** stock-research workflow with English trade/research policies.
+## The problem
 
-## Why This Is Needed
+Agentic systems (LangGraph, CrewAI, custom orchestrators, copilots with tools) do not
+just generate text — they **invoke code that changes the world**: approve loans,
+place trades, update records, send messages. When something goes wrong, it is rarely
+because the model “didn’t know” the rule. It is because **the rule was never bound to
+execution**.
 
-Agentic applications usually fail in predictable ways:
-- A tool is called with valid syntax but risky business intent (for example, approving a high-value loan in auto mode).
-- Different agents share the same tool, but not the same permissions.
-- The final user message contains risky claims ("guaranteed approval"), even when tool usage was compliant.
-- Rules exist in docs/confluence but are not enforced uniformly in runtime code.
+### Failure modes that show up in production
 
-`openagentpolicy` solves this by making policy checks part of execution, not just guidance:
-- Tool guardrails enforce constraints at `before_tool_call` (can prevent the call) and observe results at `after_tool_call` (cannot prevent side effects). See [Event semantics](#event-semantics-before-vs-after-tool-call).
-- Agent context (`agent_id`, `metadata`) supports role- and workflow-based controls.
-- Final response checks enforce communication policy before user-visible output.
-- English policy authoring can be compiled to structured enforceable rules.
+**1. Valid tool calls, invalid business outcomes**
 
-### Practical value examples
+An agent calls `approve_loan(approved_amount=7500, approval_mode="auto")`. The
+function runs, the side effect happens, and only later does someone notice the
+business rule (“no auto-approval above $5,000”) was violated. The LLM had the right
+*intent* in the prompt; the runtime had no gate on the tool boundary.
 
-#### Example A: Prevent a costly automation mistake
+**2. Shared tools, different roles — no consistent access control**
 
-Without policy:
-- Agent calls `approve_loan(approved_amount=7500, approval_mode="auto")`
-- Tool succeeds
-- Business rule violated
+`loan-agent`, `compliance-agent`, and a retail copilot may all call the same
+`approve_loan` or `place_trade_order` function. Without a single enforcement layer,
+every framework path reimplements `if agent_id != ...` (or forgets to). One code path
+blocks; another bypasses the wrapper and calls the underlying callable directly.
 
-With policy:
-- Policy blocks `approved_amount > 5000` when mode is `auto`
-- Runtime raises `PolicyViolation`
-- Agent must escalate to review flow
+**3. Compliant tools, non-compliant user-facing text**
 
-#### Example B: Shared tools, role-specific control
+Tool usage can be perfect while the final answer says “guaranteed approval” or
+“guaranteed returns.” Regulated domains (lending, healthcare, investments) care about
+**what reaches the user**, not only which APIs were called. Prompt instructions alone
+do not reliably prevent that.
 
-Without policy:
-- `compliance-agent` and `loan-agent` both can call `approve_loan`
-- Access control must be reimplemented in each orchestrator path
+**4. Rules live in documents, not in runtime**
 
-With policy:
-- One policy states only `loan-agent` may approve
-- Any non-allowed agent is blocked consistently across frameworks
+Policies are written in Confluence, compliance playbooks, or English paragraphs in a
+UI — but engineers ship scattered `if` checks (or nothing at all). Updates require
+code deploys; auditors cannot replay “which policy fired on this call?” from a single
+trace. Typos in field names can **fail open** (policy never matches → default allow).
 
-#### Example C: Safe communication after successful tools
+**5. Framework churn hides the real boundary**
 
-Without response policy:
-- Tool calls are compliant, but final answer says "guaranteed approval"
-- Regulatory or trust risk at user boundary
+Teams switch orchestrators or add MCP servers and remote tools. Guardrails tied to one
+framework’s callback shape do not transfer. The durable boundary is simpler: **the
+decorated tool call in-process**, **the agent identity for that turn**, and **the
+text you return to the user** — but most stacks do not standardize those three.
 
-With response policy:
-- `before_final_response` catches banned language
-- App returns safe fallback text or revised response
+### Why “just add checks in the agent” is not enough
 
-### Business and engineering benefits
+- **Duplication**: the same threshold, allowlist, and workflow flag copied into every
+  node, service, and example script.
+- **Drift**: production allows what the demo blocked because one path never got the
+  new `if`.
+- **No compile-time safety**: English policy text is not validated against inventory
+  (unknown tools, misspelled fields) until something fails silently at runtime.
+- **Weak audit story**: logs show “tool failed” without structured policy id, matched
+  conditions, and decision type.
 
-- Fewer duplicated guardrail checks across services and frameworks
-- Faster policy updates (file or API source + runtime reload)
-- Better auditability (policy decisions appear in traces/audit logs)
-- Safer multi-agent scaling because controls are centralized
+---
+
+## The solution
+
+`openagentpolicy` is a **policy enforcement runtime** that sits on those boundaries.
+Rules are declared as **inventory + policies** (YAML or HTTP), optionally authored in
+**English** and compiled to structured form. At runtime, only **compiled structured
+policies** are enforced — deterministically, with traces and audit events.
+
+You add a small amount of integration code; governance owns the policy files.
+
+### Three enforcement boundaries
+
+| Boundary | Integration | What it enforces |
+|----------|-------------|------------------|
+| **Tool** | `@policy_tool` on functions | `before_tool_call` (can block or modify args before side effects), `after_tool_call` (redact/warn/log — cannot undo side effects) |
+| **Agent** | `agent_session(agent_id, metadata=...)` around a turn or graph node | Who is acting; workflow flags (e.g. `human_reviewed`, `compliance_cleared`) |
+| **Output** | `check_final_response(...)` before returning text | `before_final_response` (e.g. forbidden phrases) |
+
+See [Event semantics](#event-semantics-before-vs-after-tool-call) for what each
+trigger can and cannot do.
+
+### English policies → compiled → enforced
+
+Compliance and product teams write rules in natural language (or structured YAML).
+The compiler:
+
+- Resolves terms against **inventory** (tools, arguments, agents, aliases).
+- Produces a structured policy or a clear `not_enforceable` / `needs_review` result.
+- In AI/hybrid mode, requires **deterministic corroboration** before auto-activation.
+
+Production runtimes should load **compiled policies only** (`policies.require_compiled:
+true`), with English compilation done in authoring/UI — not on every request.
+
+### How the solution maps to the failure modes
+
+**Costly automation mistake** — A `before_tool_call` policy blocks
+`approved_amount > 5000` when `approval_mode` is `auto`. The tool never runs;
+`PolicyViolation` forces an escalation path.
+
+**Shared tools, role-specific control** — One policy: only `loan-agent` may call
+`approve_loan` (or only `trading-desk-agent` may call `place_trade_order`). Every
+orchestrator path that uses `@policy_tool` + `agent_session` gets the same decision.
+
+**Non-compliant final text** — `before_final_response` blocks phrases like
+“guaranteed approval” before the user sees them (literal `contains` / `regex` — not
+semantic classification; see [Scope and limitations](#scope-and-limitations)).
+
+**Rules in runtime, not only in docs** — Policies are versioned files or API payloads;
+reload without rewriting agent logic. Decisions land in traces/audit logs with matched
+policy ids.
+
+**Framework-agnostic at the boundary** — LangGraph, a custom loop, or a CLI can all
+call the same decorated tools inside `agent_session`. What matters is that tools are
+not bypassed.
+
+### What you add in code (typical integration)
+
+```python
+from openagentpolicy import configure, policy_tool, agent_session, check_final_response
+
+configure("openagentpolicy.yaml")  # once at startup
+
+@policy_tool(id="approve_loan", risk_level="high", side_effect=True)
+def approve_loan(application_id: str, approved_amount: float):
+    ...
+
+with agent_session("loan-agent", metadata={"human_reviewed": True}):
+    approve_loan(...)
+
+safe = check_final_response(draft_reply, agent_id="loan-agent")
+```
+
+Policies themselves live in `policies/*.yaml` — not as Python branches.
+
+### Engineering outcomes
+
+- **One place** for guardrails instead of N copies in graph nodes and microservices.
+- **Faster policy change** — edit YAML, reload; optional HTTP policy provider.
+- **Auditability** — structured decisions in traces (tool, agent, action, message).
+- **Safer multi-agent scale** — agent id and session metadata drive allowlists and
+  workflow gates without per-agent code forks.
+
+### Examples in this repository
+
+- [examples/loan_approval_basic](examples/loan_approval_basic/) — minimal tool-only sample.
+- [examples/agentic_loan_desk](examples/agentic_loan_desk/) — English compilation, tool + agent + response policies.
+- [examples/agentic_stock_research](examples/agentic_stock_research/) — **LangGraph** workflow with English trade/research policies.
+- [examples/agentic_procurement](examples/agentic_procurement/) — **procurement / payables** (POs, payments, budget metadata, English policies).
+- [examples/agentic_insurance_claims](examples/agentic_insurance_claims/) — **insurance claims** (CrewAI crew, intake/payout roles, supervisor metadata, English policies).
 
 ## Event semantics: before vs after tool call
 

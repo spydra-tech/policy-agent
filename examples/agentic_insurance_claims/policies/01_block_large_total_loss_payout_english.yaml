@@ -1,0 +1,7 @@
+id: block_large_total_loss_payout_english
+name: Block Large Total-Loss Auto Payouts (English)
+enabled: true
+policy_type: english
+english: >
+  If claim amount is greater than 50000 and loss type is total loss,
+  automatic payout is not allowed.

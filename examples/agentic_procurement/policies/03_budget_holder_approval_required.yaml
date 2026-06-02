@@ -1,0 +1,18 @@
+id: budget_holder_approval_required
+name: Budget Holder Sign-Off for Payments
+enabled: true
+policy_type: structured
+trigger:
+  event: before_tool_call
+  tool_id: approve_vendor_payment
+conditions:
+  all:
+    - field: tool_args.amount
+      operator: ">"
+      value: 10000
+    - field: metadata.budget_holder_approved
+      operator: "!="
+      value: true
+action:
+  type: block
+  message: Payments above 10000 require budget_holder_approved=true in session metadata.

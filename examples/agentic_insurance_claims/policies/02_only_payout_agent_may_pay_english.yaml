@@ -1,0 +1,5 @@
+id: only_payout_agent_may_pay_english
+name: Only Payout Agent May Issue Payments (English)
+enabled: true
+policy_type: english
+english: Only payout-agent may call issue claim payout.

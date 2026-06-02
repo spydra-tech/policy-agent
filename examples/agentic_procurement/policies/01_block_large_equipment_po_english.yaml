@@ -1,0 +1,7 @@
+id: block_large_equipment_po_english
+name: Block Large Equipment POs (English)
+enabled: true
+policy_type: english
+english: >
+  If order amount is greater than 25000 and category is equipment,
+  the purchase order is not allowed.

@@ -1,0 +1,13 @@
+id: block_claim_fully_approved_response
+name: Block Absolute Approval Language
+enabled: true
+policy_type: structured
+trigger:
+  event: before_final_response
+conditions:
+  field: final_response
+  operator: contains
+  value: claim fully approved
+action:
+  type: block
+  message: Agents must not tell customers the claim is fully approved without review.

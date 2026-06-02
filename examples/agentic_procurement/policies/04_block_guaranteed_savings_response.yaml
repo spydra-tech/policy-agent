@@ -1,0 +1,13 @@
+id: block_guaranteed_savings_response
+name: Block Guaranteed Savings Claims
+enabled: true
+policy_type: structured
+trigger:
+  event: before_final_response
+conditions:
+  field: final_response
+  operator: contains
+  value: guaranteed savings
+action:
+  type: block
+  message: Agents must not promise guaranteed savings to business users.

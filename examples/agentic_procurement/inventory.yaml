@@ -1,0 +1,61 @@
+application:
+  id: agentic-procurement
+  name: Agentic Procurement Desk
+  environment: demo
+
+agents:
+  - id: procurement-agent
+    name: Procurement Agent
+    description: Creates POs and may approve vendor payments within policy
+  - id: finance-agent
+    name: Finance Agent
+    description: Reviews spend; must not approve vendor payments directly
+  - id: requester-agent
+    name: Requester Agent
+    description: Business user who may raise small purchase requests only
+
+tools:
+  - id: lookup_vendor
+    name: Lookup Vendor
+    description: Read vendor master data and payment terms
+    side_effect: false
+    risk_level: low
+    arguments:
+      vendor_id:
+        type: string
+        description: Vendor identifier
+
+  - id: create_purchase_order
+    name: Create Purchase Order
+    description: Create a purchase order against a vendor
+    side_effect: true
+    risk_level: medium
+    arguments:
+      vendor_id:
+        type: string
+      amount:
+        type: number
+        description: Order amount in USD
+        aliases:
+          - order amount
+      category:
+        type: string
+        description: Spend category
+        allowed_values:
+          - software
+          - equipment
+          - services
+
+  - id: approve_vendor_payment
+    name: Approve Vendor Payment
+    description: Approve payment against an existing purchase order
+    side_effect: true
+    risk_level: high
+    arguments:
+      po_id:
+        type: string
+      amount:
+        type: number
+        description: Payment amount in USD
+        aliases:
+          - payment amount

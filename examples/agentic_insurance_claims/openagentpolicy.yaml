@@ -1,0 +1,30 @@
+application:
+  id: agentic-insurance-claims
+  name: Agentic Insurance Claims
+  environment: demo
+
+runtime:
+  default_agent_id: claims-adjuster-agent
+
+inventory:
+  provider: file
+  path: ./inventory.yaml
+  conflict_strategy: prefer_static
+
+policies:
+  provider: directory
+  path: ./policies
+  support_english: true
+  compile_on_startup: true
+  english_compiler: hybrid
+
+traces:
+  enabled: true
+  store:
+    provider: local
+    path: ./openagentpolicy_traces
+
+enforcement:
+  default_action: allow
+  on_policy_error: allow_with_warning
+  audit_enabled: true

@@ -1,0 +1,5 @@
+id: only_procurement_may_approve_payment_english
+name: Only Procurement May Approve Payments (English)
+enabled: true
+policy_type: english
+english: Only procurement-agent may call approve vendor payment.

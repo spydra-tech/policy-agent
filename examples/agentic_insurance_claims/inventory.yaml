@@ -1,0 +1,86 @@
+application:
+  id: agentic-insurance-claims
+  name: Agentic Insurance Claims Crew
+  environment: demo
+
+agents:
+  - id: claims-adjuster-agent
+    name: Claims Adjuster
+    description: Intake and policy lookup for new claims
+    framework: crewai
+  - id: fraud-analyst-agent
+    name: Fraud Analyst
+    description: Reviews fraud signals; must not issue payouts
+    framework: crewai
+  - id: payout-agent
+    name: Payout Specialist
+    description: May issue claim payouts when supervisor approval is on file
+    framework: crewai
+  - id: customer-service-agent
+    name: Customer Service Agent
+    description: Answers status questions; no payout authority
+    framework: crewai
+
+tools:
+  - id: lookup_policy
+    name: Lookup Policy
+    description: Retrieve policy coverage details
+    side_effect: false
+    risk_level: low
+    arguments:
+      policy_id:
+        type: string
+
+  - id: record_claim_intake
+    name: Record Claim Intake
+    description: Register a new claim in the claims system
+    side_effect: true
+    risk_level: medium
+    arguments:
+      claim_id:
+        type: string
+      amount:
+        type: number
+        description: Claim amount in USD
+        aliases:
+          - claim amount
+      loss_type:
+        type: string
+        description: Type of loss
+        allowed_values:
+          - auto_collision
+          - property_damage
+          - total_loss
+
+  - id: flag_fraud_signal
+    name: Flag Fraud Signal
+    description: Add a fraud review flag to a claim
+    side_effect: true
+    risk_level: medium
+    arguments:
+      claim_id:
+        type: string
+      reason:
+        type: string
+
+  - id: issue_claim_payout
+    name: Issue Claim Payout
+    description: Issue payment on an approved claim
+    side_effect: true
+    risk_level: high
+    arguments:
+      claim_id:
+        type: string
+      amount:
+        type: number
+        description: Payout amount in USD
+        aliases:
+          - claim amount
+          - payout amount
+      loss_type:
+        type: string
+        description: Loss type from intake (optional; defaults from claim record)
+        allowed_values:
+          - auto_collision
+          - property_damage
+          - total_loss

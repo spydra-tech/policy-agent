@@ -1,0 +1,18 @@
+id: supervisor_approval_required
+name: Supervisor Approval for Large Payouts
+enabled: true
+policy_type: structured
+trigger:
+  event: before_tool_call
+  tool_id: issue_claim_payout
+conditions:
+  all:
+    - field: tool_args.amount
+      operator: ">"
+      value: 15000
+    - field: metadata.supervisor_approved
+      operator: "!="
+      value: true
+action:
+  type: block
+  message: Payouts above 15000 require supervisor_approved=true in session metadata.
